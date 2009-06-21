@@ -1465,10 +1465,10 @@
   false."
   {:tag Boolean}
   [pred coll]
-    (if (seq coll)
-      (and (pred (first coll))
-           (recur pred (next coll)))
-      true))
+  (cond
+   (nil? (seq coll)) true
+   (pred (first coll)) (recur pred (next coll))
+   :else false))
 
 (def
  #^{:tag Boolean
@@ -1713,15 +1713,24 @@
 (defn partition
   "Returns a lazy sequence of lists of n items each, at offsets step
   apart. If step is not supplied, defaults to n, i.e. the partitions
-  do not overlap."
+  do not overlap. If a pad collection is supplied, use its elements as
+  necessary to complete last partition upto n items. In case there are
+  not enough padding elements, return a partition with less than n items."
   ([n coll]
      (partition n n coll))
   ([n step coll]
-   (lazy-seq
-    (when-let [s (seq coll)]
-      (let [p (take n s)]
-        (when (= n (count p))
-          (cons p (partition n step (drop step s)))))))))
+     (lazy-seq
+       (when-let [s (seq coll)]
+         (let [p (take n s)]
+           (when (= n (count p))
+             (cons p (partition n step (drop step s))))))))
+  ([n step pad coll]
+     (lazy-seq
+       (when-let [s (seq coll)]
+         (let [p (take n s)]
+           (if (= n (count p))
+             (cons p (partition n step pad (drop step s)))
+             (list (take n (concat p pad)))))))))
 
 ;; evaluation
 
@@ -2975,16 +2984,20 @@
   [v] (instance? clojure.lang.Var v))
 
 (defn slurp
-  "Reads the file named by f into a string and returns it."
-  [#^String f]
-  (with-open [r (new java.io.BufferedReader (new java.io.FileReader f))]
+  "Reads the file named by f using the encoding enc into a string
+  and returns it."
+  ([f] (slurp f (.name (java.nio.charset.Charset/defaultCharset))))
+  ([#^String f #^String enc]
+  (with-open [r (new java.io.BufferedReader
+                  (new java.io.InputStreamReader
+                    (new java.io.FileInputStream f) enc))]
     (let [sb (new StringBuilder)]
-      (loop [c (. r (read))]
+      (loop [c (.read r)]
         (if (neg? c)
           (str sb)
           (do
-            (. sb (append (char c)))
-            (recur (. r (read)))))))))
+            (.append sb (char c))
+            (recur (.read r)))))))))
 
 (defn subs
   "Returns the substring of s beginning at start inclusive, and ending
@@ -3676,11 +3689,11 @@
   All definitions a lib makes should be in its associated namespace.
 
   'require loads a lib by loading its root resource. The root resource path
-  is derived from the root directory path by repeating its last component
-  and appending '.clj'. For example, the lib 'x.y.z has root directory
-  <classpath>/x/y/z; root resource <classpath>/x/y/z/z.clj. The root
-  resource should contain code to create the lib's namespace and load any
-  additional lib resources.
+  is derived from the lib name in the following manner:
+  Consider a lib named by the symbol 'x.y.z; it has the root directory
+  <classpath>/x/y/, and its root resource is <classpath>/x/y/z.clj. The root
+  resource should contain code to create the lib's namespace (usually by using
+  the ns macro) and load any additional lib resources.
 
   Libspecs
 
@@ -3707,7 +3720,14 @@
     already loaded
   :reload-all implies :reload and also forces loading of all libs that the
     identified libs directly or indirectly load via require or use
-  :verbose triggers printing information about each load, alias, and refer"
+  :verbose triggers printing information about each load, alias, and refer
+
+  Example:
+
+  The following would load the libraries clojure.zip and clojure.set
+  abbreviated as 's'.
+
+  (require '(clojure zip [set :as s]))"
 
   [& args]
   (apply load-libs :require args))
