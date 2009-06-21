@@ -10,9 +10,10 @@
     (:import
      (java.awt BorderLayout)
      (java.awt.event ActionEvent ActionListener)
-     (javax.swing.tree TreeModel)
+     (javax.swing.event TreeSelectionListener)
+     (javax.swing.tree TreeModel TreeSelectionModel)
      (javax.swing.table TableModel AbstractTableModel)
-     (javax.swing JPanel JTree JTable JScrollPane JFrame JToolBar JButton SwingUtilities)))
+     (javax.swing JPanel JTree JTable JScrollPane JFrame JToolBar JButton JSplitPane JEditorPane SwingUtilities)))
 
 (defn atom? [x]
   (not (coll? x)))
@@ -62,7 +63,6 @@
       -1)
     (removeTreeModelListener [treeModelListener])))
 
-
 (defn old-table-model [data]
   (let [row1 (first data)
 	colcnt (count row1)
@@ -81,14 +81,36 @@
 	(nth (vals (nth data rowIndex)) columnIndex))
       (isCellEditable [rowIndex columnIndex] false)
       (removeTableModelListener [tableModelListener]))))
-      
+
+(defn set-path-on-change [pane]
+  (letfn [(not-any-coll? [x] (or (not (coll? x)) (not-any? coll? x)))
+          (filter-not-any-coll [x] (if (coll? x) (filter not-any-coll? x) x))]
+    (proxy [TreeSelectionListener] []
+      (valueChanged [e] (.setText pane (print-str (map filter-not-any-coll
+                                                       (.getPath (.getPath e)))))))))
+
+(defn set-single-tree-selection-mode
+  "sets a SINGLE-TREE-SELECTION mode on the JTree"
+  [#^JTree tree]
+  (.setSelectionMode (.getSelectionModel tree)
+                     TreeSelectionModel/SINGLE_TREE_SELECTION))
+
 (defn inspect-tree 
   "creates a graphical (Swing) inspector on the supplied hierarchical data"
   [data]
-  (doto (JFrame. "Clojure Inspector")
-    (.add (JScrollPane. (JTree. (tree-model data))))
-    (.setSize 400 600)
-    (.setVisible true)))
+  (let [path-view (doto (JEditorPane.)
+                    (.setEditable false))]
+    (doto (JFrame. "Clojure Inspector")
+      (.add (doto (JSplitPane. JSplitPane/VERTICAL_SPLIT)
+              (.setTopComponent (JScrollPane.
+                                 (doto (JTree. (tree-model data))
+                                   (set-single-tree-selection-mode)
+                                   (.addTreeSelectionListener (set-path-on-change path-view)))))
+              (.setBottomComponent path-view)
+              (.setDividerLocation 500)
+              (.setResizeWeight 0.99)))
+      (.setSize 400 600)
+      (.setVisible true))))
 
 (defn inspect-table 
   "creates a graphical (Swing) inspector on the supplied regular
