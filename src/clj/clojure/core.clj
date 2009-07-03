@@ -129,17 +129,6 @@
  vector? (fn vector? [x] (instance? clojure.lang.IPersistentVector x)))
 
 (def
- #^{:private true}
- sigs
- (fn [fdecl]
-   (if (seq? (first fdecl))
-     (loop [ret [] fdecl fdecl]
-       (if fdecl
-         (recur (conj ret (first (first fdecl))) (next fdecl))
-         (seq ret)))
-     (list (first fdecl)))))
-
-(def
  #^{:arglists '([map key val] [map key val & kvs])
     :doc "assoc[iate]. When applied to a map, returns a new map of the
     same (hashed/sorted) type, that contains the mapping of key(s) to
@@ -168,6 +157,27 @@
     map m as its metadata."}
  with-meta (fn with-meta [#^clojure.lang.IObj x m]
              (. x (withMeta m))))
+
+(def
+ #^{:private true}
+ sigs
+ (fn [fdecl]
+   (let [asig 
+         (fn [fdecl]
+           (let [arglist (first fdecl)
+                 body (next fdecl)]
+             (if (map? (first body))
+               (if (next body)
+                 (with-meta arglist (conj (if (meta arglist) (meta arglist) {}) (first body)))
+                 arglist)
+               arglist)))]
+     (if (seq? (first fdecl))
+       (loop [ret [] fdecls fdecl]
+         (if fdecls
+           (recur (conj ret (asig (first fdecls))) (next fdecls))
+           (seq ret)))
+       (list (asig fdecl))))))
+
 
 (def 
  #^{:arglists '([coll])
@@ -1268,14 +1278,30 @@
 
   :validator validate-fn
 
+  :min-history (default 0)
+  :max-history (default 10)
+
   If metadata-map is supplied, it will be come the metadata on the
   ref. validate-fn must be nil or a side-effect-free fn of one
   argument, which will be passed the intended new state on any state
   change. If the new state is unacceptable, the validate-fn should
   return false or throw an exception. validate-fn will be called on
-  transaction commit, when all refs have their final values."
+  transaction commit, when all refs have their final values.
+
+  Normally refs accumulate history dynamically as needed to deal with
+  read demands. If you know in advance you will need history you can
+  set :min-history to ensure it will be available when first needed (instead
+  of after a read fault). History is limited, and the limit can be set
+  with :max-history."
   ([x] (new clojure.lang.Ref x))
-  ([x & options] (setup-reference (ref x) options)))
+  ([x & options] 
+   (let [r  #^clojure.lang.Ref (setup-reference (ref x) options)
+         opts (apply hash-map options)]
+    (when (:max-history opts)
+      (.setMaxHistory r (:max-history opts)))
+    (when (:min-history opts)
+      (.setMinHistory r (:min-history opts)))
+    r)))
 
 (defn deref
   "Also reader macro: @ref/@agent/@var/@atom/@delay/@future. Within a transaction,
@@ -1382,6 +1408,25 @@
   Returns val."
   [#^clojure.lang.Ref ref val]
     (. ref (set val)))
+
+(defn ref-history-count
+  "Returns the history count of a ref"
+  [#^clojure.lang.Ref ref]
+    (.getHistoryCount ref))
+
+(defn ref-min-history
+  "Gets the min-history of a ref, or sets it and returns the ref"
+  ([#^clojure.lang.Ref ref]
+    (.getMinHistory ref))
+  ([#^clojure.lang.Ref ref n]
+    (.setMinHistory ref n)))
+
+(defn ref-max-history
+  "Gets the max-history of a ref, or sets it and returns the ref"
+  ([#^clojure.lang.Ref ref]
+    (.getMaxHistory ref))
+  ([#^clojure.lang.Ref ref n]
+    (.setMaxHistory ref n)))
 
 (defn ensure
   "Must be called in a transaction. Protects the ref from modification
@@ -2607,7 +2652,7 @@
      (even? (count bindings)) "an even number of forms in binding vector")
   `(let* ~(destructure bindings) ~@body))
 
-;redefine fn with destructuring
+;redefine fn with destructuring and pre/post conditions
 (defmacro fn
   "(fn name? [params* ] exprs*)
   (fn name? ([params* ] exprs*)+)
@@ -2623,9 +2668,26 @@
           sigs (if name (next sigs) sigs)
           sigs (if (vector? (first sigs)) (list sigs) sigs)
           psig (fn [sig]
-                 (let [[params & body] sig]
+                 (let [[params & body] sig
+                       conds (when (and (next body) (map? (first body))) 
+                                           (first body))
+                       body (if conds (next body) body)
+                       conds (or conds ^params)
+                       pre (:pre conds)
+                       post (:post conds)                       
+                       body (if post
+                              `((let [~'% ~(if (< 1 (count body)) 
+                                            `(do ~@body) 
+                                            (first body))]
+                                 ~@(map (fn [c] `(assert ~c)) post)
+                                 ~'%))
+                              body)
+                       body (if pre
+                              (concat (map (fn [c] `(assert ~c)) pre) 
+                                      body)
+                              body)]
                    (if (every? symbol? params)
-                     sig
+                     (cons params body)
                      (loop [params params
                             new-params []
                             lets []]
@@ -2794,8 +2856,9 @@
   "Evaluates expr and throws an exception if it does not evaluate to
  logical true."
   [x]
-  `(when-not ~x
-     (throw (new Exception (str "Assert failed: " (pr-str '~x))))))
+  (when *assert*
+    `(when-not ~x
+       (throw (new Exception (str "Assert failed: " (pr-str '~x)))))))
 
 (defn test
   "test [v] finds fn at key :test in var metadata and calls it,
