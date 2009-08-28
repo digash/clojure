@@ -420,25 +420,56 @@
   [& body]
   (list 'new 'clojure.lang.LazySeq (list* '#^{:once true} fn* [] body)))    
 
+(defn #^clojure.lang.ChunkBuffer chunk-buffer [capacity]
+  (clojure.lang.ChunkBuffer. capacity))
+
+(defn chunk-append [#^clojure.lang.ChunkBuffer b x]
+  (.add b x))
+
+(defn chunk [#^clojure.lang.ChunkBuffer b]
+  (.chunk b))
+
+(defn #^clojure.lang.IChunk chunk-first [#^clojure.lang.IChunkedSeq s]
+  (.chunkedFirst s))
+
+(defn #^clojure.lang.ISeq chunk-rest [#^clojure.lang.IChunkedSeq s]
+  (.chunkedMore s))
+
+(defn #^clojure.lang.ISeq chunk-next [#^clojure.lang.IChunkedSeq s]
+  (.chunkedNext s))
+
+(defn chunk-cons [chunk rest]
+  (if (clojure.lang.Numbers/isZero (clojure.lang.RT/count chunk))
+    rest
+    (clojure.lang.ChunkedCons. chunk rest)))
+  
+(defn chunked-seq? [s]
+  (instance? clojure.lang.IChunkedSeq s))
+
 (defn concat
   "Returns a lazy seq representing the concatenation of the elements in the supplied colls."
   ([] (lazy-seq nil))
   ([x] (lazy-seq x))
   ([x y]
-     (lazy-seq
+    (lazy-seq
       (let [s (seq x)]
         (if s
-          (cons (first s) (concat (rest s) y))
+          (if (chunked-seq? s)
+            (chunk-cons (chunk-first s) (concat (chunk-rest s) y))
+            (cons (first s) (concat (rest s) y)))
           y))))
   ([x y & zs]
      (let [cat (fn cat [xys zs]
                  (lazy-seq
-                  (let [xys (seq xys)]
-                    (if xys
-                      (cons (first xys) (cat (rest xys) zs))
-                      (when zs
-                        (cat (first zs) (next zs)))))))]
-           (cat (concat x y) zs))))
+                   (let [xys (seq xys)]
+                     (if xys
+                       (if (chunked-seq? xys)
+                         (chunk-cons (chunk-first xys)
+                                     (cat (chunk-rest xys) zs))
+                         (cons (first xys) (cat (rest xys) zs)))
+                       (when zs
+                         (cat (first zs) (next zs)))))))]
+       (cat (concat x y) zs))))
 
 ;;;;;;;;;;;;;;;;at this point all the support for syntax-quote exists;;;;;;;;;;;;;;;;;;;;;;
 
@@ -547,8 +578,8 @@
   bounds, nth throws an exception unless not-found is supplied.  nth
   also works for strings, Java arrays, regex Matchers and Lists, and,
   in O(n) time, for sequences."
-  {:inline (fn  [c i] `(. clojure.lang.RT (nth ~c ~i)))
-   :inline-arities #{2}}
+  {:inline (fn  [c i & nf] `(. clojure.lang.RT (nth ~c ~i ~@nf)))
+   :inline-arities #{2 3}}
   ([coll index] (. clojure.lang.RT (nth coll index)))
   ([coll index not-found] (. clojure.lang.RT (nth coll index not-found))))
 
@@ -570,32 +601,6 @@
   "Returns a number one greater than num."
   {:inline (fn [x] `(. clojure.lang.Numbers (inc ~x)))}
   [x] (. clojure.lang.Numbers (inc x)))
-
-(defn #^clojure.lang.ChunkBuffer chunk-buffer [capacity]
-  (clojure.lang.ChunkBuffer. capacity))
-
-(defn chunk-append [#^clojure.lang.ChunkBuffer b x]
-  (.add b x))
-
-(defn chunk [#^clojure.lang.ChunkBuffer b]
-  (.chunk b))
-
-(defn #^clojure.lang.IChunk chunk-first [#^clojure.lang.IChunkedSeq s]
-  (.chunkedFirst s))
-
-(defn #^clojure.lang.ISeq chunk-rest [#^clojure.lang.IChunkedSeq s]
-  (.chunkedMore s))
-
-(defn #^clojure.lang.ISeq chunk-next [#^clojure.lang.IChunkedSeq s]
-  (.chunkedNext s))
-
-(defn chunk-cons [chunk rest]
-  (if (zero? (count chunk))
-    rest
-    (clojure.lang.ChunkedCons. chunk rest)))
-  
-(defn chunked-seq? [s]
-  (instance? clojure.lang.IChunkedSeq s))
 
 (defn reduce
   "f should be a function of 2 arguments. If val is not supplied,
@@ -1862,27 +1867,49 @@
                (if-not exprs
                  [true `(do ~@body)]
                  (let [k (first exprs)
-                       v (second exprs)
-                       seqsym (when-not (keyword? k) (gensym))
-                       recform (if (keyword? k) recform `(recur (next ~seqsym)))
-                       steppair (step recform (nnext exprs))
-                       needrec (steppair 0)
-                       subform (steppair 1)]
-                   (cond
-                     (= k :let) [needrec `(let ~v ~subform)]
-                     (= k :while) [false `(when ~v
-                                            ~subform
-                                            ~@(when needrec [recform]))]
-                     (= k :when) [false `(if ~v
-                                           (do
-                                             ~subform
-                                             ~@(when needrec [recform]))
-                                           ~recform)]
-                     :else [true `(loop [~seqsym (seq ~v)]
-                                    (when ~seqsym
-                                      (let [~k (first ~seqsym)]
-                                        ~subform
-                                        ~@(when needrec [recform]))))]))))]
+                       v (second exprs)]
+                   (if (keyword? k)
+                     (let [steppair (step recform (nnext exprs))
+                           needrec (steppair 0)
+                           subform (steppair 1)]
+                       (cond
+                         (= k :let) [needrec `(let ~v ~subform)]
+                         (= k :while) [false `(when ~v
+                                                ~subform
+                                                ~@(when needrec [recform]))]
+                         (= k :when) [false `(if ~v
+                                               (do
+                                                 ~subform
+                                                 ~@(when needrec [recform]))
+                                               ~recform)]))
+                     (let [seq- (gensym "seq_")
+                           chunk- (with-meta (gensym "chunk_")
+                                             {:tag 'clojure.lang.IChunk})
+                           count- (gensym "count_")
+                           i- (gensym "i_")
+                           recform `(recur (next ~seq-) nil (int 0) (int 0))
+                           steppair (step recform (nnext exprs))
+                           needrec (steppair 0)
+                           subform (steppair 1)
+                           recform-chunk 
+                             `(recur ~seq- ~chunk- ~count- (unchecked-inc ~i-))
+                           steppair-chunk (step recform-chunk (nnext exprs))
+                           subform-chunk (steppair-chunk 1)]
+                       [true
+                        `(loop [~seq- (seq ~v), ~chunk- nil,
+                                ~count- (int 0), ~i- (int 0)]
+                           (if (< ~i- ~count-)
+                             (let [~k (.nth ~chunk- ~i-)]
+                               ~subform-chunk
+                               ~@(when needrec [recform-chunk]))
+                             (when-let [~seq- (seq ~seq-)]
+                               (if (chunked-seq? ~seq-)
+                                 (let [c# (chunk-first ~seq-)]
+                                   (recur (chunk-rest ~seq-) c#
+                                          (int (count c#)) (int 0)))
+                                 (let [~k (first ~seq-)]
+                                   ~subform
+                                   ~@(when needrec [recform]))))))])))))]
     (nth (step nil (seq seq-exprs)) 1)))
 
 (defn dorun
@@ -2588,10 +2615,18 @@
        (cons (first s) (take-nth n (drop n s))))))
 
 (defn interleave
-  "Returns a lazy seq of the first item in each coll, then the second
-  etc."
-  [& colls]
-    (apply concat (apply map list colls)))
+  "Returns a lazy seq of the first item in each coll, then the second etc."
+  ([c1 c2]
+     (lazy-seq
+      (let [s1 (seq c1) s2 (seq c2)]
+        (when (and s1 s2)
+          (cons (first s1) (cons (first s2) 
+                                 (interleave (rest s1) (rest s2))))))))
+  ([c1 c2 & colls] 
+     (lazy-seq 
+      (let [ss (map seq (conj colls c2 c1))]
+        (when (every? identity ss)
+          (concat (map first ss) (apply interleave (map rest ss))))))))
 
 (defn var-get
   "Gets the value in the var object"
@@ -2823,7 +2858,7 @@
    binding-forms.  Supported modifiers are: :let [binding-form expr ...],
    :while test, :when test.
 
-  (take 100 (for [x (range 100000000) y (range 1000000) :while (< y x)]  [x y]))"
+  (take 100 (for [x (range 100000000) y (range 1000000) :while (< y x)] [x y]))"
   [seq-exprs body-expr]
   (assert-args for
      (vector? seq-exprs) "a vector for its binding"
@@ -2855,11 +2890,48 @@
                                            (recur (rest ~gxs))))
                                      :else `(cons ~body-expr
                                                   (~giter (rest ~gxs)))))]
-                      `(fn ~giter [~gxs]
-                         (lazy-seq
-                           (loop [~gxs ~gxs]
-                             (when-first [~bind ~gxs]
-                               ~(do-mod mod-pairs)))))))]
+                      (if next-groups
+                        #_"not the inner-most loop"
+                        `(fn ~giter [~gxs]
+                           (lazy-seq
+                             (loop [~gxs ~gxs]
+                               (when-first [~bind ~gxs]
+                                 ~(do-mod mod-pairs)))))
+                        #_"inner-most loop"
+                        (let [gi (gensym "i__")
+                              gb (gensym "b__")
+                              do-cmod (fn do-cmod [[[k v :as pair] & etc]]
+                                        (cond
+                                          (= k :let) `(let ~v ~(do-cmod etc))
+                                          (= k :while) `(when ~v ~(do-cmod etc))
+                                          (= k :when) `(if ~v
+                                                         ~(do-cmod etc)
+                                                         (recur
+                                                           (unchecked-inc ~gi)))
+                                          (keyword? k)
+                                            (err "Invalid 'for' keyword " k)
+                                          :else
+                                            `(do (chunk-append ~gb ~body-expr)
+                                                 (recur (unchecked-inc ~gi)))))]
+                          `(fn ~giter [~gxs]
+                             (lazy-seq
+                               (loop [~gxs ~gxs]
+                                 (when-let [~gxs (seq ~gxs)]
+                                   (if (chunked-seq? ~gxs)
+                                     (let [c# (chunk-first ~gxs)
+                                           size# (int (count c#))
+                                           ~gb (chunk-buffer size#)]
+                                       (if (loop [~gi (int 0)]
+                                             (if (< ~gi size#)
+                                               (let [~bind (.nth c# ~gi)]
+                                                 ~(do-cmod mod-pairs))
+                                               true))
+                                         (chunk-cons
+                                           (chunk ~gb)
+                                           (~giter (chunk-rest ~gxs)))
+                                         (chunk-cons (chunk ~gb) nil)))
+                                     (let [~bind (first ~gxs)]
+                                       ~(do-mod mod-pairs)))))))))))]
     `(let [iter# ~(emit-bind (to-groups seq-exprs))]
         (iter# ~(second seq-exprs)))))
 
