@@ -57,7 +57,7 @@ static final Symbol IMPORT = Symbol.create("clojure.core", "import*");
 //static final Symbol INSTANCE = Symbol.create("instance?");
 
 //static final Symbol THISFN = Symbol.create("thisfn");
-//static final Symbol CLASS = Symbol.create("class");
+static final Symbol CLASS = Symbol.create("Class");
 static final Symbol NEW = Symbol.create("new");
 //static final Symbol UNQUOTE = Symbol.create("unquote");
 //static final Symbol UNQUOTE_SPLICING = Symbol.create("unquote-splicing");
@@ -177,6 +177,9 @@ static final public Var METHOD = Var.create(null);
 //null or not
 static final public Var IN_CATCH_FINALLY = Var.create(null);
 
+//DynamicClassLoader
+static final public Var LOADER = Var.create();
+
 //String
 static final public Var SOURCE = Var.intern(Namespace.findOrCreate(Symbol.create("clojure.core")),
                                             Symbol.create("*source-path*"), "NO_SOURCE_FILE");
@@ -205,8 +208,6 @@ static final public Var NEXT_LOCAL_NUM = Var.create(0);
 //Integer
 static final public Var RET_LOCAL_NUM = Var.create();
 
-//DynamicClassLoader
-static final public Var LOADER = Var.create();
 
 public enum C{
 	STATEMENT,  //value ignored
@@ -4483,7 +4484,7 @@ public static Object macroexpand1(Object x) throws Exception{
 					Object target = RT.second(form);
 					if(HostExpr.maybeClass(target, false) != null)
 						{
-						target = RT.list(IDENTITY, target);
+						target = ((IObj)RT.list(IDENTITY, target)).withMeta(RT.map(RT.TAG_KEY,CLASS));
 						}
 					return RT.listStar(DOT, target, meth, form.next().next());
 					}
