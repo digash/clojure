@@ -6,7 +6,9 @@
 ;   the terms of this license.
 ;   You must not remove this notice, or any other, from this software.
 
-(ns clojure.core)
+(ns #^{:doc "The core Clojure language."
+       :author "Rich Hickey"}
+  clojure.core)
 
 (def unquote)
 (def unquote-splicing)
@@ -26,15 +28,17 @@
 ;during bootstrap we don't have destructuring let, loop or fn, will redefine later
 (def
  #^{:macro true}
-  let (fn* let [& decl] (cons 'let* decl)))
+  let (fn* let [&form &env & decl] (cons 'let* decl)))
 
 (def
  #^{:macro true}
- loop (fn* loop [& decl] (cons 'loop* decl)))
+ loop (fn* loop [&form &env & decl] (cons 'loop* decl)))
 
 (def
  #^{:macro true}
- fn (fn* fn [& decl] (cons 'fn* decl)))
+ fn (fn* fn [&form &env & decl] 
+         (.withMeta #^clojure.lang.IObj (cons 'fn* decl) 
+                    (.meta #^clojure.lang.IMeta &form))))
 
 (def
  #^{:arglists '([coll])
@@ -115,6 +119,11 @@
 
 (def
  #^{:arglists '([x])
+    :doc "Return true if x is a Character"}
+ char? (fn char? [x] (instance? Character x)))
+
+(def
+ #^{:arglists '([x])
     :doc "Return true if x is a String"}
  string? (fn string? [x] (instance? String x)))
 
@@ -165,6 +174,10 @@
    (let [asig 
          (fn [fdecl]
            (let [arglist (first fdecl)
+                 ;elide implicit macro args
+                 arglist (if (clojure.lang.Util/equals '&form (first arglist)) 
+                           (clojure.lang.RT/subvec arglist 2 (clojure.lang.RT/count arglist))
+                           arglist)
                  body (next fdecl)]
              (if (map? (first body))
                (if (next body)
@@ -203,7 +216,7 @@
     to the var metadata"
     :arglists '([name doc-string? attr-map? [params*] body]
                 [name doc-string? attr-map? ([params*] body)+ attr-map?])}
- defn (fn defn [name & fdecl]
+ defn (fn defn [&form &env name & fdecl]
         (let [m (if (string? (first fdecl))
                   {:doc (first fdecl)}
                   {})
@@ -225,9 +238,19 @@
               fdecl (if (map? (last fdecl))
                       (butlast fdecl)
                       fdecl)
-              m (conj {:arglists (list 'quote (sigs fdecl))} m)]
-          (list 'def (with-meta name (conj (if (meta name) (meta name) {}) m))
-                (cons `fn fdecl)))))
+              m (conj {:arglists (list 'quote (sigs fdecl))} m)
+              m (let [inline (:inline m)
+                      ifn (first inline)
+                      iname (second inline)]
+                  ;; same as: (if (and (= 'fn ifn) (not (symbol? iname))) ...)
+                  (if (if (clojure.lang.Util/equiv 'fn ifn)
+                        (if (instance? clojure.lang.Symbol iname) false true))
+                    ;; inserts the same fn name to the inline fn if it does not have one
+                    (assoc m :inline (cons ifn (cons name (next inline))))
+                    m))
+              m (conj (if (meta name) (meta name) {}) m)]
+          (list 'def (with-meta name m)
+                (list '.withMeta (cons `fn (cons name fdecl)) (list '.meta (list 'var name)))))))
 
 (. (var defn) (setMacro))
 
@@ -292,6 +315,11 @@
 
  
 ;;;;;;;;;;;;;;;;;;;;
+(defn nil?
+  "Returns true if x is nil, false otherwise."
+  {:tag Boolean}
+  [x] (clojure.lang.Util/identical x nil))
+
 (def
 
  #^{:doc "Like defn, but the resulting function name is declared as a
@@ -299,11 +327,44 @@
   called."
     :arglists '([name doc-string? attr-map? [params*] body]
                 [name doc-string? attr-map? ([params*] body)+ attr-map?])}
- defmacro (fn [name & args]
-            (list 'do
-                  (cons `defn (cons name args))
-                  (list '. (list 'var name) '(setMacro))
-                  (list 'var name))))
+ defmacro (fn [&form &env 
+                name & args]
+             (let [prefix (loop [p (list name) args args]
+                            (let [f (first args)]
+                              (if (string? f)
+                                (recur (cons f p) (next args))
+                                (if (map? f)
+                                  (recur (cons f p) (next args))
+                                  p))))
+                   fdecl (loop [fd args]
+                           (if (string? (first fd))
+                             (recur (next fd))
+                             (if (map? (first fd))
+                               (recur (next fd))
+                               fd)))
+                   fdecl (if (vector? (first fdecl))
+                           (list fdecl)
+                           fdecl)
+                   add-implicit-args (fn [fd]
+                             (let [args (first fd)]
+                               (cons (vec (cons '&form (cons '&env args))) (next fd))))
+                   add-args (fn [acc ds]
+                              (if (nil? ds)
+                                acc
+                                (let [d (first ds)]
+                                  (if (map? d)
+                                    (conj acc d)
+                                    (recur (conj acc (add-implicit-args d)) (next ds))))))
+                   fdecl (seq (add-args [] fdecl))
+                   decl (loop [p prefix d fdecl]
+                          (if p
+                            (recur (next p) (cons (first p) d))
+                            d))]
+               (list 'do
+                     (cons `defn decl)
+                     (list '. (list 'var name) '(setMacro))
+                     (list 'var name)))))
+
 
 (. (var defmacro) (setMacro))
 
@@ -317,20 +378,15 @@
   [test & body]
     (list 'if test nil (cons 'do body)))
 
-(defn nil?
-  "Returns true if x is nil, false otherwise."
-  {:tag Boolean}
-  [x] (identical? x nil))
-
 (defn false?
   "Returns true if x is the value false, false otherwise."
   {:tag Boolean}
-  [x] (identical? x false))
+  [x] (clojure.lang.Util/identical x false))
 
 (defn true?
   "Returns true if x is the value true, false otherwise."
   {:tag Boolean}
-  [x] (identical? x true))
+  [x] (clojure.lang.Util/identical x true))
 
 (defn not
   "Returns true if x is logical false, false otherwise."
@@ -367,13 +423,6 @@
   ([name] (if (symbol? name) name (clojure.lang.Symbol/intern name)))
   ([ns name] (clojure.lang.Symbol/intern ns name)))
 
-(defn keyword
-  "Returns a Keyword with the given namespace and name.  Do not use :
-  in the keyword strings, it will be added automatically."
-  {:tag clojure.lang.Keyword}
-  ([name] (if (keyword? name) name (clojure.lang.Keyword/intern name)))
-  ([ns name] (clojure.lang.Keyword/intern ns name)))
-
 (defn gensym
   "Returns a new symbol with a unique name. If a prefix string is
   supplied, the name is prefix# where # is some unique number. If
@@ -394,6 +443,15 @@
                 (throw (IllegalArgumentException.
                          "cond requires an even number of forms")))
             (cons 'clojure.core/cond (next (next clauses))))))
+
+(defn keyword
+  "Returns a Keyword with the given namespace and name.  Do not use :
+  in the keyword strings, it will be added automatically."
+  {:tag clojure.lang.Keyword}
+  ([name] (cond (keyword? name) name
+                (symbol? name) (clojure.lang.Keyword/intern #^clojure.lang.Symbol name)
+                (string? name) (clojure.lang.Keyword/intern #^String name)))
+  ([ns name] (clojure.lang.Keyword/intern ns name)))
 
 (defn spread
   {:private true}
@@ -432,8 +490,6 @@
   (apply f (meta obj) args) as its metadata."
  [obj f & args]
   (with-meta obj (apply f (meta obj) args)))
-
-
 
 (defmacro lazy-seq
   "Takes a body of expressions that returns an ISeq or nil, and yields
@@ -495,8 +551,6 @@
        (cat (concat x y) zs))))
 
 ;;;;;;;;;;;;;;;;at this point all the support for syntax-quote exists;;;;;;;;;;;;;;;;;;;;;;
-
-
 (defmacro delay
   "Takes a body of expressions and yields a Delay object that will
   invoke the body only the first time it is forced (with force), and
@@ -514,10 +568,18 @@
   [x] (. clojure.lang.Delay (force x)))
 
 (defmacro if-not
-  "Evaluates test. If logical false, evaluates and returns then expr, otherwise else expr, if supplied, else nil."
+  "Evaluates test. If logical false, evaluates and returns then expr, 
+  otherwise else expr, if supplied, else nil."
   ([test then] `(if-not ~test ~then nil))
   ([test then else]
    `(if (not ~test) ~then ~else)))
+
+(defn identical?
+  "Tests if 2 arguments are the same object"
+  {:tag Boolean
+   :inline (fn [x y] `(. clojure.lang.Util identical ~x ~y))
+   :inline-arities #{2}}
+  ([x y] (clojure.lang.Util/identical x y)))
 
 (defn =
   "Equality. Returns true if x equals y, false if not. Same as
@@ -893,10 +955,12 @@
 
 (defn bit-shift-left
   "Bitwise shift left"
+  {:inline (fn [x n] `(. clojure.lang.Numbers (shiftLeft ~x ~n)))}
   [x n] (. clojure.lang.Numbers shiftLeft x n))
 
 (defn bit-shift-right
   "Bitwise shift right"
+  {:inline (fn [x n] `(. clojure.lang.Numbers (shiftRight ~x ~n)))}
   [x n] (. clojure.lang.Numbers shiftRight x n))
 
 (defn even?
@@ -1135,15 +1199,16 @@
 (defmacro defmethod
   "Creates and installs a new method of multimethod associated with dispatch-value. "
   [multifn dispatch-val & fn-tail]
-  `(. ~multifn addMethod ~dispatch-val (fn ~@fn-tail)))
+  `(. ~(with-meta multifn {:tag 'clojure.lang.MultiFn}) addMethod ~dispatch-val (fn ~@fn-tail)))
 
 (defn remove-method
-  "Removes the method of multimethod associated	with dispatch-value."
+  "Removes the method of multimethod associated with dispatch-value."
  [#^clojure.lang.MultiFn multifn dispatch-val]
  (. multifn removeMethod dispatch-val))
 
 (defn prefer-method
-  "Causes the multimethod to prefer matches of dispatch-val-x over dispatch-val-y when there is a conflict"
+  "Causes the multimethod to prefer matches of dispatch-val-x over dispatch-val-y 
+   when there is a conflict"
   [#^clojure.lang.MultiFn multifn dispatch-val-x dispatch-val-y]
   (. multifn preferMethod dispatch-val-x dispatch-val-y))
 
@@ -1173,7 +1238,8 @@
 (defmacro if-let
   "bindings => binding-form test
 
-  If test is true, evaluates then with binding-form bound to the value of test, if not, yields else"
+  If test is true, evaluates then with binding-form bound to the value of 
+  test, if not, yields else"
   ([bindings then]
    `(if-let ~bindings ~then nil))
   ([bindings then else & oldform]
@@ -1313,14 +1379,29 @@
 
   :validator validate-fn
 
+  :error-handler handler-fn
+
+  :error-mode mode-keyword
+
   If metadata-map is supplied, it will be come the metadata on the
   agent. validate-fn must be nil or a side-effect-free fn of one
   argument, which will be passed the intended new state on any state
   change. If the new state is unacceptable, the validate-fn should
-  return false or throw an exception."
-  ([state] (new clojure.lang.Agent state))
+  return false or throw an exception.  handler-fn is called if an
+  action throws an exception or if validate-fn rejects a new state --
+  see set-error-handler! for details.  The mode-keyword may be either
+  :continue (the default if an error-handler is given) or :fail (the
+  default if no error-handler is given) -- see set-error-mode! for
+  details."
   ([state & options]
-     (setup-reference (agent state) options)))
+     (let [a (new clojure.lang.Agent state)
+           opts (apply hash-map options)]
+       (setup-reference a options)
+       (when (:error-handler opts)
+         (.setErrorHandler a (:error-handler opts)))
+       (.setErrorMode a (or (:error-mode opts)
+                            (if (:error-handler opts) :continue :fail)))
+       a)))
 
 (defn send
   "Dispatch an action to an agent. Returns the agent immediately.
@@ -1350,7 +1431,7 @@
   [] (clojure.lang.Agent/releasePendingSends))
 
 (defn add-watch
-  "Experimental.
+  "Alpha - subject to change.
   Adds a watch function to an agent/atom/var/ref reference. The watch
   fn must be a fn of 4 args: a key, the reference, its old-state, its
   new-state. Whenever the reference's state might have been changed,
@@ -1367,42 +1448,78 @@
   [#^clojure.lang.IRef reference key fn] (.addWatch reference key fn))
 
 (defn remove-watch
-  "Experimental.
+  "Alpha - subject to change.
   Removes a watch (set by add-watch) from a reference"
   [#^clojure.lang.IRef reference key]
   (.removeWatch reference key))
 
-(defn add-watcher
-  "Experimental.
-  Adds a watcher to an agent/atom/var/ref reference. The watcher must
-  be an Agent, and the action a function of the agent's state and one
-  additional arg, the reference. Whenever the reference's state
-  changes, any registered watchers will have their actions
-  sent. send-type must be one of :send or :send-off. The actions will
-  be sent after the reference's state is changed. Var watchers are
-  triggered only by root binding changes, not thread-local set!s"
-  [#^clojure.lang.IRef reference send-type watcher-agent action-fn]
-  (add-watch reference watcher-agent
-    (fn [watcher-agent reference old-state new-state]
-      (when-not (identical? old-state new-state)
-        ((if (= send-type :send-off) send-off send)
-         watcher-agent action-fn reference)))))
+(defn agent-error
+  "Returns the exception thrown during an asynchronous action of the
+  agent if the agent is failed.  Returns nil if the agent is not
+  failed."
+  [#^clojure.lang.Agent a] (.getError a))
 
-(defn remove-watcher
-  "Experimental.
-  Removes a watcher (set by add-watcher) from a reference"
-  [reference watcher-agent]
-  (remove-watch reference watcher-agent))
+(defn restart-agent
+  "When an agent is failed, changes the agent state to new-state and
+  then un-fails the agent so that sends are allowed again.  If
+  a :clear-actions true option is given, any actions queued on the
+  agent that were being held while it was failed will be discarded,
+  otherwise those held actions will proceed.  The new-state must pass
+  the validator if any, or restart will throw an exception and the
+  agent will remain failed with its old state and error.  Watchers, if
+  any, will NOT be notified of the new state.  Throws an exception if
+  the agent is not failed."
+  [#^clojure.lang.Agent a, new-state & options]
+  (let [opts (apply hash-map options)]
+    (.restart a new-state (if (:clear-actions opts) true false))))
+
+(defn set-error-handler!
+  "Sets the error-handler of agent a to handler-fn.  If an action
+  being run by the agent throws an exception or doesn't pass the
+  validator fn, handler-fn will be called with two arguments: the
+  agent and the exception."
+  [#^clojure.lang.Agent a, handler-fn]
+  (.setErrorHandler a handler-fn))
+
+(defn error-handler
+  "Returns the error-handler of agent a, or nil if there is none.
+  See set-error-handler!"
+  [#^clojure.lang.Agent a]
+  (.getErrorHandler a))
+
+(defn set-error-mode!
+  "Sets the error-mode of agent a to mode-keyword, which must be
+  either :fail or :continue.  If an action being run by the agent
+  throws an exception or doesn't pass the validator fn, an
+  error-handler may be called (see set-error-handler!), after which,
+  if the mode is :continue, the agent will continue as if neither the
+  action that caused the error nor the error itself ever happened.
+  
+  If the mode is :fail, the agent will become failed and will stop
+  accepting new 'send' and 'send-off' actions, and any previously
+  queued actions will be held until a 'restart-agent'.  Deref will
+  still work, returning the state of the agent before the error."
+  [#^clojure.lang.Agent a, mode-keyword]
+  (.setErrorMode a mode-keyword))
+
+(defn error-mode
+  "Returns the error-mode of agent a.  See set-error-mode!"
+  [#^clojure.lang.Agent a]
+  (.getErrorMode a))
 
 (defn agent-errors
-  "Returns a sequence of the exceptions thrown during asynchronous
+  "DEPRECATED: Use 'agent-error' instead.
+  Returns a sequence of the exceptions thrown during asynchronous
   actions of the agent."
-  [#^clojure.lang.Agent a] (. a (getErrors)))
+  [a]
+  (when-let [e (agent-error a)]
+    (list e)))
 
 (defn clear-agent-errors
-  "Clears any exceptions thrown during asynchronous actions of the
+  "DEPRECATED: Use 'restart-agent' instead.
+  Clears any exceptions thrown during asynchronous actions of the
   agent, allowing subsequent actions to occur."
-  [#^clojure.lang.Agent a] (. a (clearErrors)))
+  [#^clojure.lang.Agent a] (restart-agent a (.deref a)))
 
 (defn shutdown-agents
   "Initiates a shutdown of the thread pools that back the agent
@@ -1717,7 +1834,7 @@
 (defn some
   "Returns the first logical true value of (pred x) for any x in coll,
   else nil.  One common idiom is to use a set as pred, for example
-  this will return true if :fred is in the sequence, otherwise nil:
+  this will return :fred if :fred is in the sequence, otherwise nil:
   (some #{:fred} coll)"
   [pred coll]
     (when (seq coll)
@@ -1789,6 +1906,8 @@
     (apply concat (apply map f colls)))
 
 (defn filter
+  "Returns a lazy sequence of the items in coll for which
+  (pred item) returns true. pred must be free of side-effects."
   ([pred coll]
    (lazy-seq
     (when-let [s (seq coll)]
@@ -1951,14 +2070,16 @@
                (next vs))
         map)))
 
+(defmacro declare
+  "defs the supplied var names with no bindings, useful for making forward declarations."
+  [& names] `(do ~@(map #(list 'def (vary-meta % assoc :declared true)) names)))
+
 (defn line-seq
   "Returns the lines of text from rdr as a lazy sequence of strings.
   rdr must implement java.io.BufferedReader."
   [#^java.io.BufferedReader rdr]
-  (lazy-seq
-   (let [line  (. rdr (readLine))]
-     (when line
-       (cons line (line-seq rdr))))))
+  (when-let [line (.readLine rdr)]
+    (cons line (lazy-seq (line-seq rdr)))))
 
 (defn comparator
   "Returns an implementation of java.util.Comparator based upon pred."
@@ -2104,7 +2225,8 @@
 (defn await
   "Blocks the current thread (indefinitely!) until all actions
   dispatched thus far, from this thread or agent, to the agent(s) have
-  occurred."
+  occurred.  Will block on failed agents.  Will never return if
+  a failed agent is restarted with :clear-actions true."
   [& agents]
   (io! "await in transaction"
     (when *agent*
@@ -2200,7 +2322,11 @@
 (defn type 
   "Returns the :type metadata of x, or its Class if none"
   [x]
-  (or (:type (meta x)) (class x)))
+  (or (:type (meta x)) 
+      (if (instance? clojure.lang.IDynamicType x)
+        (let [x #^ clojure.lang.IDynamicType x]
+          (.getDynamicType x))
+        (class x))))
 
 (defn num
   "Coerce to Number"
@@ -2328,6 +2454,7 @@
   of *out*.  Prints the object(s), separated by spaces if there is
   more than one.  By default, pr and prn print in a way that objects
   can be read by the reader"
+  {:dynamic true}
   ([] nil)
   ([x]
      (pr-on x *out*))
@@ -2480,7 +2607,7 @@
 (defn aget
   "Returns the value at the index/indices. Works on Java arrays of all
   types."
-  {:inline (fn [a i] `(. clojure.lang.RT (aget ~a ~i)))
+  {:inline (fn [a i] `(. clojure.lang.RT (aget ~a (int ~i))))
    :inline-arities #{2}}
   ([array idx]
    (clojure.lang.Reflector/prepRet (. Array (get array idx))))
@@ -2490,7 +2617,7 @@
 (defn aset
   "Sets the value at the index/indices. Works on Java arrays of
   reference types. Returns val."
-  {:inline (fn [a i v] `(. clojure.lang.RT (aset ~a ~i ~v)))
+  {:inline (fn [a i v] `(. clojure.lang.RT (aset ~a (int ~i) ~v)))
    :inline-arities #{3}}
   ([array idx val]
    (. Array (set array idx val))
@@ -2925,23 +3052,23 @@
     (let [name (if (symbol? (first sigs)) (first sigs) nil)
           sigs (if name (next sigs) sigs)
           sigs (if (vector? (first sigs)) (list sigs) sigs)
-          psig (fn [sig]
+          psig (fn* [sig]
                  (let [[params & body] sig
                        conds (when (and (next body) (map? (first body))) 
                                            (first body))
                        body (if conds (next body) body)
-                       conds (or conds ^params)
+                       conds (or conds (meta params))
                        pre (:pre conds)
                        post (:post conds)                       
                        body (if post
                               `((let [~'% ~(if (< 1 (count body)) 
                                             `(do ~@body) 
                                             (first body))]
-                                 ~@(map (fn [c] `(assert ~c)) post)
+                                 ~@(map (fn* [c] `(assert ~c)) post)
                                  ~'%))
                               body)
                        body (if pre
-                              (concat (map (fn [c] `(assert ~c)) pre) 
+                              (concat (map (fn* [c] `(assert ~c)) pre) 
                                       body)
                               body)]
                    (if (every? symbol? params)
@@ -2963,7 +3090,7 @@
         (if name
           (list* 'fn* name new-sigs)
           (cons 'fn* new-sigs))
-        *macro-meta*)))
+        (meta &form))))
 
 (defmacro loop
   "Evaluates the exprs in a lexical context in which the symbols in
@@ -3153,13 +3280,13 @@
   [x]
   (when *assert*
     `(when-not ~x
-       (throw (new Exception (str "Assert failed: " (pr-str '~x)))))))
+       (throw (new AssertionError (str "Assert failed: " (pr-str '~x)))))))
 
 (defn test
   "test [v] finds fn at key :test in var metadata and calls it,
   presuming failure will throw exception"
   [v]
-    (let [f (:test ^v)]
+    (let [f (:test (meta v))]
       (if f
         (do (f) :ok)
         :no-test)))
@@ -3198,11 +3325,10 @@
   using java.util.regex.Matcher.find(), each such match processed with
   re-groups."
   [#^java.util.regex.Pattern re s]
-    (let [m (re-matcher re s)]
-      ((fn step []
-         (lazy-seq
-          (when (. m (find))
-            (cons (re-groups m) (step))))))))
+  (let [m (re-matcher re s)]
+    ((fn step []
+       (when (. m (find))
+         (cons (re-groups m) (lazy-seq (step))))))))
 
 (defn re-matches
   "Returns the match, if any, of string to pattern, using
@@ -3242,11 +3368,11 @@
 
 (defn print-doc [v]
   (println "-------------------------")
-  (println (str (ns-name (:ns ^v)) "/" (:name ^v)))
-  (prn (:arglists ^v))
-  (when (:macro ^v)
+  (println (str (ns-name (:ns (meta v))) "/" (:name (meta v))))
+  (prn (:arglists (meta v)))
+  (when (:macro (meta v))
     (println "Macro"))
-  (println " " (:doc ^v)))
+  (println " " (:doc (meta v))))
 
 (defn find-doc
   "Prints documentation for any var whose documentation or name
@@ -3255,9 +3381,9 @@
     (let [re  (re-pattern re-string-or-pattern)]
       (doseq [ns (all-ns)
               v (sort-by (comp :name meta) (vals (ns-interns ns)))
-              :when (and (:doc ^v)
-                         (or (re-find (re-matcher re (:doc ^v)))
-                             (re-find (re-matcher re (str (:name ^v))))))]
+              :when (and (:doc (meta v))
+                         (or (re-find (re-matcher re (:doc (meta v))))
+                             (re-find (re-matcher re (str (:name (meta v)))))))]
                (print-doc v))))
 
 (defn special-form-anchor
@@ -3285,7 +3411,7 @@
   [nspace]
   (println "-------------------------")
   (println (str (ns-name nspace)))
-  (println " " (:doc ^nspace)))
+  (println " " (:doc (meta nspace))))
 
 (defmacro doc
   "Prints documentation for a var or special form given its name"
@@ -3430,7 +3556,7 @@
       `(binding [*math-context* (java.math.MathContext. ~precision ~@rm)]
          ~@body)))
 
-(defn bound-fn
+(defn mk-bound-fn
   {:private true}
   [#^clojure.lang.Sorted sc test key]
   (fn [e]
@@ -3441,30 +3567,30 @@
   >=. Returns a seq of those entries with keys ek for
   which (test (.. sc comparator (compare ek key)) 0) is true"
   ([#^clojure.lang.Sorted sc test key]
-   (let [include (bound-fn sc test key)]
+   (let [include (mk-bound-fn sc test key)]
      (if (#{> >=} test)
        (when-let [[e :as s] (. sc seqFrom key true)]
          (if (include e) s (next s)))
        (take-while include (. sc seq true)))))
   ([#^clojure.lang.Sorted sc start-test start-key end-test end-key]
    (when-let [[e :as s] (. sc seqFrom start-key true)]
-     (take-while (bound-fn sc end-test end-key)
-                 (if ((bound-fn sc start-test start-key) e) s (next s))))))
+     (take-while (mk-bound-fn sc end-test end-key)
+                 (if ((mk-bound-fn sc start-test start-key) e) s (next s))))))
 
 (defn rsubseq
   "sc must be a sorted collection, test(s) one of <, <=, > or
   >=. Returns a reverse seq of those entries with keys ek for
   which (test (.. sc comparator (compare ek key)) 0) is true"
   ([#^clojure.lang.Sorted sc test key]
-   (let [include (bound-fn sc test key)]
+   (let [include (mk-bound-fn sc test key)]
      (if (#{< <=} test)
        (when-let [[e :as s] (. sc seqFrom key false)]
          (if (include e) s (next s)))
        (take-while include (. sc seq false)))))
   ([#^clojure.lang.Sorted sc start-test start-key end-test end-key]
    (when-let [[e :as s] (. sc seqFrom end-key false)]
-     (take-while (bound-fn sc start-test start-key)
-                 (if ((bound-fn sc end-test end-key) e) s (next s))))))
+     (take-while (mk-bound-fn sc start-test start-key)
+                 (if ((mk-bound-fn sc end-test end-key) e) s (next s))))))
 
 (defn repeatedly
   "Takes a function of no args, presumably with side effects, and returns an infinite
@@ -3472,8 +3598,13 @@
   [f] (lazy-seq (cons (f) (repeatedly f))))
 
 (defn add-classpath
-  "Adds the url (String or URL object) to the classpath per URLClassLoader.addURL"
-  [url] (. clojure.lang.RT addURL url))
+  "DEPRECATED 
+
+  Adds the url (String or URL object) to the classpath per
+  URLClassLoader.addURL"
+  [url]
+  (println "WARNING: add-classpath is deprecated")
+  (clojure.lang.RT/addURL url))
 
 
 
@@ -3493,7 +3624,7 @@
   (let [[pre-args [args expr]] (split-with (comp not vector?) decl)]
     `(do
        (defn ~name ~@pre-args ~args ~(apply (eval (list `fn args expr)) args))
-       (alter-meta! (var ~name) assoc :inline (fn ~args ~expr))
+       (alter-meta! (var ~name) assoc :inline (fn ~name ~args ~expr))
        (var ~name))))
 
 (defn empty
@@ -3504,8 +3635,9 @@
 
 (defmacro amap
   "Maps an expression across an array a, using an index named idx, and
-  return value named ret, initialized to a clone of a, then setting each element of
-  ret to the evaluation of expr, returning the new array ret."
+  return value named ret, initialized to a clone of a, then setting 
+  each element of ret to the evaluation of expr, returning the new 
+  array ret."
   [a idx ret expr]
   `(let [a# ~a
          ~ret (aclone a#)]
@@ -3518,8 +3650,8 @@
 
 (defmacro areduce
   "Reduces an expression across an array a, using an index named idx,
-  and return value named ret, initialized to init, setting ret to the evaluation of expr at
-  each step, returning ret."
+  and return value named ret, initialized to init, setting ret to the 
+  evaluation of expr at each step, returning ret."
   [a idx ret init expr]
   `(let [a# ~a]
      (loop  [~idx (int 0) ~ret ~init]
@@ -3534,12 +3666,46 @@
   ([size-or-seq] (. clojure.lang.Numbers float_array size-or-seq))
   ([size init-val-or-seq] (. clojure.lang.Numbers float_array size init-val-or-seq)))
 
+(defn boolean-array
+  "Creates an array of booleans"
+  {:inline (fn [& args] `(. clojure.lang.Numbers boolean_array ~@args))
+   :inline-arities #{1 2}}
+  ([size-or-seq] (. clojure.lang.Numbers boolean_array size-or-seq))
+  ([size init-val-or-seq] (. clojure.lang.Numbers boolean_array size init-val-or-seq)))
+
+(defn byte-array
+  "Creates an array of bytes"
+  {:inline (fn [& args] `(. clojure.lang.Numbers byte_array ~@args))
+   :inline-arities #{1 2}}
+  ([size-or-seq] (. clojure.lang.Numbers byte_array size-or-seq))
+  ([size init-val-or-seq] (. clojure.lang.Numbers byte_array size init-val-or-seq)))
+
+(defn char-array
+  "Creates an array of chars"
+  {:inline (fn [& args] `(. clojure.lang.Numbers char_array ~@args))
+   :inline-arities #{1 2}}
+  ([size-or-seq] (. clojure.lang.Numbers char_array size-or-seq))
+  ([size init-val-or-seq] (. clojure.lang.Numbers char_array size init-val-or-seq)))
+
+(defn short-array
+  "Creates an array of shorts"
+  {:inline (fn [& args] `(. clojure.lang.Numbers short_array ~@args))
+   :inline-arities #{1 2}}
+  ([size-or-seq] (. clojure.lang.Numbers short_array size-or-seq))
+  ([size init-val-or-seq] (. clojure.lang.Numbers short_array size init-val-or-seq)))
+
 (defn double-array
   "Creates an array of doubles"
   {:inline (fn [& args] `(. clojure.lang.Numbers double_array ~@args))
    :inline-arities #{1 2}}
   ([size-or-seq] (. clojure.lang.Numbers double_array size-or-seq))
   ([size init-val-or-seq] (. clojure.lang.Numbers double_array size init-val-or-seq)))
+
+(defn object-array
+  "Creates an array of objects"
+  {:inline (fn [arg] `(. clojure.lang.RT object_array ~arg))
+   :inline-arities #{1}}
+  ([size-or-seq] (. clojure.lang.RT object_array size-or-seq)))
 
 (defn int-array
   "Creates an array of ints"
@@ -3549,11 +3715,27 @@
   ([size init-val-or-seq] (. clojure.lang.Numbers int_array size init-val-or-seq)))
 
 (defn long-array
-  "Creates an array of ints"
+  "Creates an array of longs"
   {:inline (fn [& args] `(. clojure.lang.Numbers long_array ~@args))
    :inline-arities #{1 2}}
   ([size-or-seq] (. clojure.lang.Numbers long_array size-or-seq))
   ([size init-val-or-seq] (. clojure.lang.Numbers long_array size init-val-or-seq)))
+
+(definline booleans
+  "Casts to boolean[]"
+  [xs] `(. clojure.lang.Numbers booleans ~xs))
+
+(definline bytes
+  "Casts to bytes[]"
+  [xs] `(. clojure.lang.Numbers bytes ~xs))
+
+(definline chars
+  "Casts to chars[]"
+  [xs] `(. clojure.lang.Numbers chars ~xs))
+
+(definline shorts
+  "Casts to shorts[]"
+  [xs] `(. clojure.lang.Numbers shorts ~xs))
 
 (definline floats
   "Casts to float[]"
@@ -3632,10 +3814,11 @@
 (defn bases
   "Returns the immediate superclass and direct interfaces of c, if any"
   [#^Class c]
-  (let [i (.getInterfaces c)
-        s (.getSuperclass c)]
-    (not-empty
-     (if s (cons s i) i))))
+  (when c
+    (let [i (.getInterfaces c)
+          s (.getSuperclass c)]
+      (not-empty
+       (if s (cons s i) i)))))
 
 (defn supers
   "Returns the immediate and indirect superclasses and interfaces of c, if any"
@@ -3790,9 +3973,8 @@
           row-struct (apply create-struct keys)
           row-values (fn [] (map (fn [#^Integer i] (. rs (getObject i))) idxs))
           rows (fn thisfn []
-                   (lazy-seq
-                    (when (. rs (next))
-                      (cons (apply struct row-struct (row-values)) (thisfn)))))]
+                 (when (. rs (next))
+                   (cons (apply struct row-struct (row-values)) (lazy-seq (thisfn)))))]
       (rows)))
 
 (defn iterator-seq
@@ -3818,7 +4000,7 @@
   [fmt & args]
   (print (apply format fmt args)))
 
-(def gen-class)
+(declare gen-class)
 
 (defmacro with-loading-context [& body]
   `((fn loading# [] 
@@ -3849,8 +4031,8 @@
     (:require (clojure.contrib sql sql.tests))
     (:use (my.lib this that))
     (:import (java.util Date Timer Random)
-              (java.sql Connection Statement)))"
-
+             (java.sql Connection Statement)))"
+  {:arglists '([name docstring? attr-map? references*])}
   [name & references]
   (let [process-reference
         (fn [[kname & args]]
@@ -3859,8 +4041,12 @@
         docstring  (when (string? (first references)) (first references))
         references (if docstring (next references) references)
         name (if docstring
-               (with-meta name (assoc (meta name)
-                                      :doc docstring))
+               (vary-meta name assoc :doc docstring)
+               name)
+        metadata   (when (map? (first references)) (first references))
+        references (if metadata (next references) references)
+        name (if metadata
+               (vary-meta name merge metadata)
                name)
         gen-class-clause (first (filter #(= :gen-class (first %)) references))
         gen-class-call
@@ -3950,7 +4136,7 @@
   (let [d (root-resource lib)]
     (subs d 0 (.lastIndexOf d "/"))))
 
-(def load)
+(declare load)
 
 (defn- load-one
   "Loads a lib given its name. If need-ns, ensures that the associated
@@ -4225,10 +4411,6 @@
  #^{:doc "bound in a repl thread to the most recent exception caught by the repl"}
  *e)
 
-(defmacro declare
-  "defs the supplied var names with no bindings, useful for making forward declarations."
-  [& names] `(do ~@(map #(list 'def %) names)))
-
 (defn trampoline
   "trampoline can be used to convert algorithms requiring mutual
   recursion without stack consumption. Calls f with supplied args, if
@@ -4252,11 +4434,11 @@
   metadata from the name symbol.  Returns the var."
   ([ns #^clojure.lang.Symbol name]
      (let [v (clojure.lang.Var/intern (the-ns ns) name)]
-       (when ^name (.setMeta v ^name))
+       (when (meta name) (.setMeta v (meta name)))
        v))
   ([ns name val]
      (let [v (clojure.lang.Var/intern (the-ns ns) name val)]
-       (when ^name (.setMeta v ^name))
+       (when (meta name) (.setMeta v (meta name)))
        v)))
 
 (defmacro while
@@ -4409,12 +4591,92 @@
   "Returns true if future f is done"
   [#^java.util.concurrent.Future f] (.isDone f))
 
+
+(defmacro letfn 
+  "Takes a vector of function specs and a body, and generates a set of
+  bindings of functions to their names. All of the names are available
+  in all of the definitions of the functions, as well as the body.
+
+  fnspec ==> (fname [params*] exprs) or (fname ([params*] exprs)+)" 
+  [fnspecs & body] 
+  `(letfn* ~(vec (interleave (map first fnspecs) 
+                             (map #(cons `fn %) fnspecs)))
+           ~@body))
+
+
+;;;;;;; case ;;;;;;;;;;;;;
+(defn- shift-mask [shift mask x]
+  (-> x (bit-shift-right shift) (bit-and mask)))
+
+(defn- min-hash 
+  "takes a collection of keys and returns [shift mask]"
+  [keys]
+  (let [hashes (map hash keys)
+        cnt (count keys)]
+    (when-not (apply distinct? hashes)
+      (throw (IllegalArgumentException. "Hashes must be distinct")))
+    (or (first 
+         (filter (fn [[s m]]
+                   (apply distinct? (map #(shift-mask s m %) hashes)))
+                 (for [mask (map #(dec (bit-shift-left 1 %)) (range 1 14))
+                       shift (range 0 31)]
+                   [shift mask])))
+        (throw (IllegalArgumentException. "No distinct mapping found")))))
+
+(defmacro case 
+  "Takes an expression, and a set of clauses.
+
+  Each clause can take the form of either:
+
+  test-constant result-expr
+
+  (test-constant1 ... test-constantN)  result-expr
+
+  The test-constants are not evaluated. They must be compile-time
+  literals, and need not be quoted.  If the expression is equal to a
+  test-constant, the corresponding result-expr is returned. A single
+  default expression can follow the clauses, and its value will be
+  returned if no clause matches. If no default expression is provided
+  and no clause matches, an IllegalArgumentException is thrown.
+
+  Unlike cond and condp, case does a constant-time dispatch, the
+  clauses are not considered sequentially.  All manner of constant
+  expressions are acceptable in case, including numbers, strings,
+  symbols, keywords, and (Clojure) composites thereof. Note that since
+  lists are used to group multiple constants that map to the same
+  expression, a vector can be used to match a list if needed. The
+  test-constants need not be all of the same type."
+
+  [e & clauses]
+  (let [ge (with-meta (gensym) {:tag Object})
+        default (if (odd? (count clauses)) 
+                  (last clauses)
+                  `(throw (IllegalArgumentException. (str "No matching clause: " ~ge))))
+        cases (partition 2 clauses)
+        case-map (reduce (fn [m [test expr]]
+                           (if (seq? test)
+                             (into m (zipmap test (repeat expr)))
+                             (assoc m test expr))) 
+                           {} cases)
+        [shift mask] (if (seq case-map) (min-hash (keys case-map)) [0 0])
+        
+        hmap (reduce (fn [m [test expr :as te]]
+                       (assoc m (shift-mask shift mask (hash test)) te))
+                     (sorted-map) case-map)]
+    `(let [~ge ~e]
+       ~(condp = (count clauses)
+          0 default
+          1 default
+          `(case* ~ge ~shift ~mask ~(key (first hmap)) ~(key (last hmap)) ~default ~hmap 
+                        ~(every? keyword? (keys case-map)))))))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;; helper files ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 (alter-meta! (find-ns 'clojure.core) assoc :doc "Fundamental library of the Clojure language")
 (load "core_proxy")
 (load "core_print")
 (load "genclass")
-
+(load "core_deftype")
+(load "gvec")
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;; futures (needs proxy);;;;;;;;;;;;;;;;;;
 (defn future-call 
   "Takes a function of no args and yields a future object that will
@@ -4423,10 +4685,12 @@
   not yet finished, calls to deref/@ will block."
   [#^Callable f]
   (let [fut (.submit clojure.lang.Agent/soloExecutor f)]
-    (proxy [clojure.lang.IDeref java.util.concurrent.Future] []
+    (reify 
+     clojure.lang.IDeref 
       (deref [] (.get fut))
-      (get ([] (.get fut))
-           ([timeout unit] (.get fut timeout unit)))
+     java.util.concurrent.Future
+      (get [] (.get fut))
+      (get [timeout unit] (.get fut timeout unit))
       (isCancelled [] (.isCancelled fut))
       (isDone [] (.isDone fut))
       (cancel [interrupt?] (.cancel fut interrupt?)))))
@@ -4481,16 +4745,6 @@
   [& exprs]
   `(pcalls ~@(map #(list `fn [] %) exprs)))
 
-(defmacro letfn 
-  "Takes a vector of function specs and a body, and generates a set of
-  bindings of functions to their names. All of the names are available
-  in all of the definitions of the functions, as well as the body.
-
-  fnspec ==> (fname [params*] exprs) or (fname ([params*] exprs)+)" 
-  [fnspecs & body] 
-  `(letfn* ~(vec (interleave (map first fnspecs) 
-                             (map #(cons `fn %) fnspecs)))
-           ~@body))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;; clojure version number ;;;;;;;;;;;;;;;;;;;;;;
 
@@ -4523,12 +4777,12 @@
        (when-let [i (:incremental *clojure-version*)]
          (str "." i))
        (when-let [q (:qualifier *clojure-version*)]
-         (str "-" q))
+         (when (pos? (count q)) (str "-" q)))
        (when (:interim *clojure-version*)
          "-SNAPSHOT")))
 
 (defn promise
-  "Experimental.
+  "Alpha - subject to change.
   Returns a promise object that can be read with deref/@, and set,
   once only, with deliver. Calls to deref/@ prior to delivery will
   block. All subsequent derefs will return the same delivered value
@@ -4536,8 +4790,10 @@
   []
   (let [d (java.util.concurrent.CountDownLatch. 1)
         v (atom nil)]
-    (proxy [clojure.lang.AFn clojure.lang.IDeref] []
+    (reify :as this 
+     clojure.lang.IDeref
       (deref [] (.await d) @v)
+     clojure.lang.IFn
       (invoke [x]
         (locking d
           (if (pos? (.getCount d))
@@ -4547,32 +4803,36 @@
             (throw (IllegalStateException. "Multiple deliver calls to a promise"))))))))
 
 (defn deliver
-  "Experimental.
+  "Alpha - subject to change.
   Delivers the supplied value to the promise, releasing any pending
   derefs. A subsequent call to deliver on a promise will throw an exception."  
   [promise val] (promise val))
 
 ;;;;;;;;;;;;;;;;;;;;; editable collections ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 (defn transient 
-  "Returns a new, transient version of the collection, in constant time."
+  "Alpha - subject to change.
+  Returns a new, transient version of the collection, in constant time."
   [#^clojure.lang.IEditableCollection coll] 
   (.asTransient coll))
 
 (defn persistent! 
-  "Returns a new, persistent version of the transient collection, in
+  "Alpha - subject to change.
+  Returns a new, persistent version of the transient collection, in
   constant time. The transient collection cannot be used after this
   call, any such use will throw an exception."
   [#^clojure.lang.ITransientCollection coll]
   (.persistent coll))
 
 (defn conj!
-  "Adds x to the transient collection, and return coll. The 'addition'
+  "Alpha - subject to change.
+  Adds x to the transient collection, and return coll. The 'addition'
   may happen at different 'places' depending on the concrete type."
   [#^clojure.lang.ITransientCollection coll x]
   (.conj coll x))
 
 (defn assoc!
-  "When applied to a transient map, adds mapping of key(s) to
+  "Alpha - subject to change.
+  When applied to a transient map, adds mapping of key(s) to
   val(s). When applied to a transient vector, sets the val at index.
   Note - index must be <= (count vector). Returns coll."
   ([#^clojure.lang.ITransientAssociative coll key val] (.assoc coll key val))
@@ -4583,7 +4843,8 @@
        ret))))
 
 (defn dissoc!
-  "Returns a transient map that doesn't contain a mapping for key(s)."
+  "Alpha - subject to change.
+  Returns a transient map that doesn't contain a mapping for key(s)."
   ([#^clojure.lang.ITransientMap map key] (.without map key))
   ([#^clojure.lang.ITransientMap map key & ks]
    (let [ret (.without map key)]
@@ -4592,13 +4853,15 @@
        ret))))
 
 (defn pop!
-  "Removes the last item from a transient vector. If
+  "Alpha - subject to change.
+  Removes the last item from a transient vector. If
   the collection is empty, throws an exception. Returns coll"
   [#^clojure.lang.ITransientVector coll] 
   (.pop coll)) 
 
 (defn disj!
-  "disj[oin]. Returns a transient set of the same (hashed/sorted) type, that
+  "Alpha - subject to change.
+  disj[oin]. Returns a transient set of the same (hashed/sorted) type, that
   does not contain key(s)."
   ([set] set)
   ([#^clojure.lang.ITransientSet set key]
@@ -4624,3 +4887,4 @@
           (recur (conj ret (first items)) (next items))
           ret)))))
 
+ 

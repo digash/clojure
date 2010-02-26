@@ -180,7 +180,6 @@ final static Keyword TAG_KEY = Keyword.intern(null, "tag");
 final static public Var AGENT = Var.intern(CLOJURE_NS, Symbol.create("*agent*"), null);
 final static public Var READEVAL = Var.intern(CLOJURE_NS, Symbol.create("*read-eval*"), T);
 final static public Var ASSERT = Var.intern(CLOJURE_NS, Symbol.create("*assert*"), T);
-final static public Var MACRO_META = Var.intern(CLOJURE_NS, Symbol.create("*macro-meta*"), null);
 final static public Var MATH_CONTEXT = Var.intern(CLOJURE_NS, Symbol.create("*math-context*"), null);
 static Keyword LINE_KEY = Keyword.intern(null, "line");
 static Keyword FILE_KEY = Keyword.intern(null, "file");
@@ -212,6 +211,15 @@ static final Var PR_ON = Var.intern(CLOJURE_NS, Symbol.create("pr-on"));
 //final static Var IMPORTS = Var.intern(CLOJURE_NS, Symbol.create("*imports*"), DEFAULT_IMPORTS);
 final static IFn inNamespace = new AFn(){
 	public Object invoke(Object arg1) throws Exception{
+		Symbol nsname = (Symbol) arg1;
+		Namespace ns = Namespace.findOrCreate(nsname);
+		CURRENT_NS.set(ns);
+		return ns;
+	}
+};
+
+final static IFn bootNamespace = new AFn(){
+	public Object invoke(Object __form, Object __env,Object arg1) throws Exception{
 		Symbol nsname = (Symbol) arg1;
 		Namespace ns = Namespace.findOrCreate(nsname);
 		CURRENT_NS.set(ns);
@@ -264,8 +272,7 @@ static{
 	AGENT.setMeta(map(dockw, "The agent currently running an action on this thread, else nil"));
 	AGENT.setTag(Symbol.create("clojure.lang.Agent"));
 	MATH_CONTEXT.setTag(Symbol.create("java.math.MathContext"));
-	//during bootstrap ns same as in-ns
-	Var nv = Var.intern(CLOJURE_NS, NAMESPACE, inNamespace);
+	Var nv = Var.intern(CLOJURE_NS, NAMESPACE, bootNamespace);
 	nv.setMacro();
 	Var v;
 	v = Var.intern(CLOJURE_NS, IN_NAMESPACE, inNamespace);
@@ -279,15 +286,6 @@ static{
 	               });
 	v.setMeta(map(dockw, "Sequentially read and evaluate the set of forms contained in the file.",
 	              arglistskw, list(vector(namesym))));
-	v = Var.intern(CLOJURE_NS, IDENTICAL,
-	               new AFn(){
-		               public Object invoke(Object arg1, Object arg2)
-				               throws Exception{
-			               return arg1 == arg2 ? RT.T : RT.F;
-		               }
-	               });
-	v.setMeta(map(dockw, "Tests if 2 arguments are the same object",
-	              arglistskw, list(vector(Symbol.create("x"), Symbol.create("y")))));
 	try {
 		doInit();
 	}
@@ -492,12 +490,6 @@ static public IPersistentMap meta(Object x){
 	if(x instanceof IMeta)
 		return ((IMeta) x).meta();
 	return null;
-}
-
-public static int count(Counted o){
-	if(o != null)
-		return o.count();
-	return 0;
 }
 
 public static int count(Object o){
@@ -877,7 +869,12 @@ static public Number box(double x){
 static public char charCast(Object x){
 	if(x instanceof Character)
 		return ((Character) x).charValue();
-	return (char) ((Number) x).intValue();
+
+	long n = ((Number) x).longValue();
+	if(n < Character.MIN_VALUE || n > Character.MAX_VALUE)
+		throw new IllegalArgumentException("Value out of range for char: " + x);
+
+	return (char) n;
 }
 
 static public boolean booleanCast(Object x){
@@ -887,16 +884,24 @@ static public boolean booleanCast(Object x){
 }
 
 static public byte byteCast(Object x){
-	return ((Number) x).byteValue();
+	long n = ((Number) x).longValue();
+	if(n < Byte.MIN_VALUE || n > Byte.MAX_VALUE)
+		throw new IllegalArgumentException("Value out of range for byte: " + x);
+
+	return (byte) n;
 }
 
 static public short shortCast(Object x){
-	return ((Number) x).shortValue();
+	long n = ((Number) x).longValue();
+	if(n < Short.MIN_VALUE || n > Short.MAX_VALUE)
+		throw new IllegalArgumentException("Value out of range for short: " + x);
+
+	return (short) n;
 }
 
 static public int intCast(Object x){
 	if(x instanceof Number)
-		return ((Number) x).intValue();
+		return intCast(((Number) x).longValue());
 	return ((Character) x).charValue();
 }
 
@@ -917,14 +922,20 @@ static public int intCast(int x){
 }
 
 static public int intCast(float x){
+	if(x < Integer.MIN_VALUE || x > Integer.MAX_VALUE)
+		throw new IllegalArgumentException("Value out of range for int: " + x);
 	return (int) x;
 }
 
 static public int intCast(long x){
+	if(x < Integer.MIN_VALUE || x > Integer.MAX_VALUE)
+		throw new IllegalArgumentException("Value out of range for int: " + x);
 	return (int) x;
 }
 
 static public int intCast(double x){
+	if(x < Integer.MIN_VALUE || x > Integer.MAX_VALUE)
+		throw new IllegalArgumentException("Value out of range for int: " + x);
 	return (int) x;
 }
 
@@ -937,6 +948,8 @@ static public long longCast(int x){
 }
 
 static public long longCast(float x){
+	if(x < Long.MIN_VALUE || x > Long.MAX_VALUE)
+		throw new IllegalArgumentException("Value out of range for long: " + x);
 	return (long) x;
 }
 
@@ -945,11 +958,21 @@ static public long longCast(long x){
 }
 
 static public long longCast(double x){
+	if(x < Long.MIN_VALUE || x > Long.MAX_VALUE)
+		throw new IllegalArgumentException("Value out of range for long: " + x);
 	return (long) x;
 }
 
 static public float floatCast(Object x){
-	return ((Number) x).floatValue();
+	if(x instanceof Float)
+		return ((Float) x).floatValue();
+
+	double n = ((Number) x).doubleValue();
+	if(n < -Float.MAX_VALUE || n > Float.MAX_VALUE)
+		throw new IllegalArgumentException("Value out of range for float: " + x);
+
+	return (float) n;
+
 }
 
 static public float floatCast(int x){
@@ -965,6 +988,9 @@ static public float floatCast(long x){
 }
 
 static public float floatCast(double x){
+	if(x < -Float.MAX_VALUE || x > Float.MAX_VALUE)
+		throw new IllegalArgumentException("Value out of range for float: " + x);
+	
 	return (float) x;
 }
 
@@ -1066,6 +1092,20 @@ static public ISeq arrayToList(Object[] a) throws Exception{
 	for(int i = a.length - 1; i >= 0; --i)
 		ret = (ISeq) cons(a[i], ret);
 	return ret;
+}
+
+static public Object[] object_array(Object sizeOrSeq){
+	if(sizeOrSeq instanceof Number)
+		return new Object[((Number) sizeOrSeq).intValue()];
+	else
+		{
+		ISeq s = RT.seq(sizeOrSeq);
+		int size = RT.count(s);
+		Object[] ret = new Object[size];
+		for(int i = 0; i < size && s != null; i++, s = s.next())
+			ret[i] = s.first();
+		return ret;
+		}
 }
 
 static public Object[] toArray(Object coll) throws Exception{

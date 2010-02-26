@@ -348,10 +348,17 @@ static public Number shiftLeft(Number x, int n){
 	return bitOps(x).shiftLeft(x, n);
 }
 
+static public int shiftLeft(int x, int n){
+	return x << n;
+}
+
 static public Number shiftRight(Number x, int n){
 	return bitOps(x).shiftRight(x, n);
 }
 
+static public int shiftRight(int x, int n){
+	return x >> n;
+}
 
 final static class IntegerOps implements Ops{
 	public Ops combine(Ops y){
@@ -1535,6 +1542,146 @@ static public long[] long_array(Object sizeOrSeq){
 			ret[i] = ((Number) s.first()).longValue();
 		return ret;
 		}
+}
+
+static public short[] short_array(int size, Object init){
+	short[] ret = new short[size];
+	if(init instanceof Short)
+		{
+		short s = (Short) init;
+		for(int i = 0; i < ret.length; i++)
+			ret[i] = s;
+		}
+	else
+		{
+		ISeq s = RT.seq(init);
+		for(int i = 0; i < size && s != null; i++, s = s.next())
+			ret[i] = (Short) s.first();
+		}
+	return ret;
+}
+
+static public short[] short_array(Object sizeOrSeq){
+	if(sizeOrSeq instanceof Number)
+		return new short[((Number) sizeOrSeq).intValue()];
+	else
+		{
+		ISeq s = RT.seq(sizeOrSeq);
+		int size = RT.count(s);
+		short[] ret = new short[size];
+		for(int i = 0; i < size && s != null; i++, s = s.next())
+			ret[i] = (Short) s.first();
+		return ret;
+		}
+}
+
+static public char[] char_array(int size, Object init){
+	char[] ret = new char[size];
+	if(init instanceof Character)
+		{
+		char c = (Character) init;
+		for(int i = 0; i < ret.length; i++)
+			ret[i] = c;
+		}
+	else
+		{
+		ISeq s = RT.seq(init);
+		for(int i = 0; i < size && s != null; i++, s = s.next())
+			ret[i] = (Character) s.first();
+		}
+	return ret;
+}
+
+static public char[] char_array(Object sizeOrSeq){
+	if(sizeOrSeq instanceof Number)
+		return new char[((Number) sizeOrSeq).intValue()];
+	else
+		{
+		ISeq s = RT.seq(sizeOrSeq);
+		int size = RT.count(s);
+		char[] ret = new char[size];
+		for(int i = 0; i < size && s != null; i++, s = s.next())
+			ret[i] = (Character) s.first();
+		return ret;
+		}
+}
+
+static public byte[] byte_array(int size, Object init){
+	byte[] ret = new byte[size];
+	if(init instanceof Byte)
+		{
+		byte b = (Byte) init;
+		for(int i = 0; i < ret.length; i++)
+			ret[i] = b;
+		}
+	else
+		{
+		ISeq s = RT.seq(init);
+		for(int i = 0; i < size && s != null; i++, s = s.next())
+			ret[i] = (Byte) s.first();
+		}
+	return ret;
+}
+
+static public byte[] byte_array(Object sizeOrSeq){
+	if(sizeOrSeq instanceof Number)
+		return new byte[((Number) sizeOrSeq).intValue()];
+	else
+		{
+		ISeq s = RT.seq(sizeOrSeq);
+		int size = RT.count(s);
+		byte[] ret = new byte[size];
+		for(int i = 0; i < size && s != null; i++, s = s.next())
+			ret[i] = (Byte)s.first();
+		return ret;
+		}
+}
+
+static public boolean[] boolean_array(int size, Object init){
+	boolean[] ret = new boolean[size];
+	if(init instanceof Boolean)
+		{
+		boolean b = (Boolean) init;
+		for(int i = 0; i < ret.length; i++)
+			ret[i] = b;
+		}
+	else
+		{
+		ISeq s = RT.seq(init);
+		for(int i = 0; i < size && s != null; i++, s = s.next())
+			ret[i] = (Boolean)s.first();
+		}
+	return ret;
+}
+
+static public boolean[] boolean_array(Object sizeOrSeq){
+	if(sizeOrSeq instanceof Number)
+		return new boolean[((Number) sizeOrSeq).intValue()];
+	else
+		{
+		ISeq s = RT.seq(sizeOrSeq);
+		int size = RT.count(s);
+		boolean[] ret = new boolean[size];
+		for(int i = 0; i < size && s != null; i++, s = s.next())
+			ret[i] = (Boolean)s.first();
+		return ret;
+		}
+}
+
+static public boolean[] booleans(Object array){
+	return (boolean[]) array;
+}
+
+static public byte[] bytes(Object array){
+	return (byte[]) array;
+}
+
+static public char[] chars(Object array){
+	return (char[]) array;
+}
+
+static public short[] shorts(Object array){
+	return (short[]) array;
 }
 
 static public float[] floats(Object array){

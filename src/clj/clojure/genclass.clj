@@ -86,7 +86,7 @@
    (contains? prim->class x) (prim->class x)
    :else (let [strx (str x)]
            (clojure.lang.RT/classForName 
-            (if (some #{\.} strx)
+            (if (some #{\. \[} strx)
               strx
               (str "java.lang." strx))))))
 
@@ -381,7 +381,7 @@
               mm (mapcat #(.getMethods #^Class %) interfaces))
                                         ;extra methods
        (doseq [[mname pclasses rclass :as msig] methods]
-         (emit-forwarding-method (str mname) pclasses rclass (:static ^msig)
+         (emit-forwarding-method (str mname) pclasses rclass (:static (meta msig))
                                  emit-unsupported))
                                         ;expose specified overridden superclass methods
        (doseq [[local-mname #^java.lang.reflect.Method m] (reduce (fn [ms [[name _ _] m]]
@@ -577,7 +577,8 @@
 
   :impl-ns name
 
-  Default: the name of the current ns. Implementations of methods will be looked up in this namespace.
+  Default: the name of the current ns. Implementations of methods will be 
+  looked up in this namespace.
 
   :load-impl-ns boolean
 
@@ -660,10 +661,12 @@
   here."
 
   [& options]
-  (when *compile-files*
     (let [options-map (apply hash-map options)
           [cname bytecode] (generate-interface options-map)]
-      (clojure.lang.Compiler/writeClassFile cname bytecode)))) 
+      (if *compile-files*
+        (clojure.lang.Compiler/writeClassFile cname bytecode)
+        (.defineClass #^DynamicClassLoader (deref clojure.lang.Compiler/LOADER) 
+                      (str (:name options-map)) bytecode)))) 
 
 (comment
 
