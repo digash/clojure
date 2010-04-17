@@ -562,7 +562,7 @@ public static class DispatchReader extends AFn{
 }
 
 static Symbol garg(int n){
-	return Symbol.intern(null, (n == -1 ? "rest" : ("p" + n)) + "__" + RT.nextID());
+	return Symbol.intern(null, (n == -1 ? "rest" : ("p" + n)) + "__" + RT.nextID() + "#");
 }
 
 public static class FnReader extends AFn{
@@ -1008,7 +1008,7 @@ public static class MapReader extends AFn{
 public static class SetReader extends AFn{
 	public Object invoke(Object reader, Object leftbracket) throws Exception{
 		PushbackReader r = (PushbackReader) reader;
-		return PersistentHashSet.create(readDelimitedList('}', r, true));
+		return PersistentHashSet.createWithCheck(readDelimitedList('}', r, true));
 	}
 
 }

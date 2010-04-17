@@ -255,14 +255,6 @@ static public void addURL(Object url) throws Exception{
 		throw new IllegalAccessError("Context classloader is not a DynamicClassLoader");
 }
 
-final static public Object EOS = new Object();
-final static public Object SKIP = new Object();
-static final public IFn EMPTY_GEN = new AFn(){
-    synchronized public Object invoke() throws Exception {
-        return EOS;
-    }
-};
-
 static{
 	Keyword dockw = Keyword.intern(null, "doc");
 	Keyword arglistskw = Keyword.intern(null, "arglists");
@@ -440,24 +432,6 @@ static public ISeq seq(Object coll){
 		return seqFrom(coll);
 }
 
-static public Stream stream(final Object coll) throws Exception{
-	if(coll == null)
-		return new Stream(EMPTY_GEN);
-	else if(coll instanceof Streamable)
-		return ((Streamable) coll).stream();
-	else if(coll instanceof Fn)
-		return new Stream((IFn) coll);
-	else if(coll instanceof Iterable)
-		return new Stream(new IteratorStream(((Iterable) coll).iterator()));
-	else if(coll.getClass().isArray())
-		return ArrayStream.createFromObject(coll);
-	else if(coll instanceof String)
-		return ArrayStream.createFromObject(((String) coll).toCharArray());
-	else
-	    return new Stream(new ASeq.Src(RT.seq(coll)));
-
-}
-
 static ISeq seqFrom(Object coll){
 	if(coll instanceof Seqable)
 		return ((Seqable) coll).seq();
@@ -467,8 +441,8 @@ static ISeq seqFrom(Object coll){
 		return IteratorSeq.create(((Iterable) coll).iterator());
 	else if(coll.getClass().isArray())
 		return ArraySeq.createFromObject(coll);
-	else if(coll instanceof String)
-		return StringSeq.create((String) coll);
+	else if(coll instanceof CharSequence)
+		return StringSeq.create((CharSequence) coll);
 	else if(coll instanceof Map)
 		return seq(((Map) coll).entrySet());
 	else {
@@ -495,6 +469,10 @@ static public IPersistentMap meta(Object x){
 public static int count(Object o){
 	if(o instanceof Counted)
 		return ((Counted) o).count();
+	return countFrom(Util.ret1(o, o = null));
+}
+
+static int countFrom(Object o){
 	if(o == null)
 		return 0;
 	else if(o instanceof IPersistentCollection) {
@@ -508,8 +486,8 @@ public static int count(Object o){
 		}
 		return i;
 	}
-	else if(o instanceof String)
-		return ((String) o).length();
+	else if(o instanceof CharSequence)
+		return ((CharSequence) o).length();
 	else if(o instanceof Collection)
 		return ((Collection) o).size();
 	else if(o instanceof Map)
@@ -605,10 +583,14 @@ static public Object pop(Object x){
 }
 
 static public Object get(Object coll, Object key){
+	if(coll instanceof ILookup)
+		return ((ILookup) coll).valAt(key);
+	return getFrom(coll, key);
+}
+
+static Object getFrom(Object coll, Object key){
 	if(coll == null)
 		return null;
-	else if(coll instanceof ILookup)
-		return ((ILookup) coll).valAt(key);
 	else if(coll instanceof Map) {
 		Map m = (Map) coll;
 		return m.get(key);
@@ -628,10 +610,14 @@ static public Object get(Object coll, Object key){
 }
 
 static public Object get(Object coll, Object key, Object notFound){
+	if(coll instanceof ILookup)
+		return ((ILookup) coll).valAt(key, notFound);
+	return getFrom(coll, key, notFound);
+}
+
+static Object getFrom(Object coll, Object key, Object notFound){
 	if(coll == null)
 		return notFound;
-	else if(coll instanceof ILookup)
-		return ((ILookup) coll).valAt(key, notFound);
 	else if(coll instanceof Map) {
 		Map m = (Map) coll;
 		if(m.containsKey(key))
@@ -713,10 +699,14 @@ static public Object dissoc(Object coll, Object key) throws Exception{
 static public Object nth(Object coll, int n){
 	if(coll instanceof Indexed)
 		return ((Indexed) coll).nth(n);
+	return nthFrom(Util.ret1(coll, coll = null), n);
+}
+
+static Object nthFrom(Object coll, int n){
 	if(coll == null)
 		return null;
-	else if(coll instanceof String)
-		return Character.valueOf(((String) coll).charAt(n));
+	else if(coll instanceof CharSequence)
+		return Character.valueOf(((CharSequence) coll).charAt(n));
 	else if(coll.getClass().isArray())
 		return Reflector.prepRet(Array.get(coll, n));
 	else if(coll instanceof RandomAccess)
@@ -750,17 +740,19 @@ static public Object nth(Object coll, int n){
 static public Object nth(Object coll, int n, Object notFound){
 	if(coll instanceof Indexed) {
 		Indexed v = (Indexed) coll;
-		if(n >= 0 && n < v.count())
-			return v.nth(n);
-		return notFound;
+			return v.nth(n, notFound);
 	}
-	else if(coll == null)
+	return nthFrom(coll, n, notFound);
+}
+
+static Object nthFrom(Object coll, int n, Object notFound){
+	if(coll == null)
 		return notFound;
 	else if(n < 0)
 		return notFound;
 
-	else if(coll instanceof String) {
-		String s = (String) coll;
+	else if(coll instanceof CharSequence) {
+		CharSequence s = (CharSequence) coll;
 		if(n < s.length())
 			return Character.valueOf(s.charAt(n));
 		return notFound;
@@ -900,6 +892,8 @@ static public short shortCast(Object x){
 }
 
 static public int intCast(Object x){
+	if(x instanceof Integer)
+		return ((Integer)x).intValue();
 	if(x instanceof Number)
 		return intCast(((Number) x).longValue());
 	return ((Character) x).charValue();
@@ -1018,12 +1012,12 @@ static public IPersistentMap map(Object... init){
 	if(init == null)
 		return PersistentArrayMap.EMPTY;
 	else if(init.length <= PersistentArrayMap.HASHTABLE_THRESHOLD)
-		return new PersistentArrayMap(init);
-	return PersistentHashMap.create(init);
+		return PersistentArrayMap.createWithCheck(init);
+	return PersistentHashMap.createWithCheck(init);
 }
 
 static public IPersistentSet set(Object... init){
-	return PersistentHashSet.create(init);
+	return PersistentHashSet.createWithCheck(init);
 }
 
 static public IPersistentVector vector(Object... init){
@@ -1709,17 +1703,5 @@ static public Object[] aclone(Object[] xs){
 	return xs.clone();
 }
 
-static public Object aget(Object xs, int i){
-	return Reflector.prepRet(Array.get(xs, i));
-}
-
-static public Object aset(Object xs, int i, Object v){
-	Array.set(xs, i, v);
-	return v;
-}
-
-static public int alength(Object xs){
-	return Array.getLength(xs);
-}
 
 }

@@ -16,7 +16,7 @@ import java.util.*;
 
 public abstract class APersistentVector extends AFn implements IPersistentVector, Iterable,
                                                                List,
-                                                               RandomAccess, Comparable, Streamable{
+                                                               RandomAccess, Comparable{
 int _hash = -1;
 
 public String toString(){
@@ -36,6 +36,7 @@ public ISeq rseq(){
 }
 
 static boolean doEquals(IPersistentVector v, Object obj){
+	if(v == obj) return true;
 	if(obj instanceof List || obj instanceof IPersistentVector)
 		{
 		Collection ma = (Collection) obj;
@@ -151,6 +152,12 @@ public int hashCode(){
 
 public Object get(int index){
 	return nth(index);
+}
+
+public Object nth(int i, Object notFound){
+	if(i >= 0 && i < count())
+		return nth(i);
+	return notFound;
 }
 
 public Object remove(int i){
@@ -396,25 +403,6 @@ public int compareTo(Object o){
 		}
 	return 0;
 }
-
-public Stream stream() throws Exception {
-    return new Stream(new Src(this));
-}
-
-    static class Src extends AFn{
-        final IPersistentVector v;
-        int i = 0;
-
-        Src(IPersistentVector v) {
-            this.v = v;
-        }
-
-        public Object invoke() throws Exception {
-            if (i < v.count())
-                return v.nth(i++);
-            return RT.EOS;
-        }
-    }
 
     static class Seq extends ASeq implements IndexedSeq, IReduce{
 	//todo - something more efficient

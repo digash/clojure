@@ -295,6 +295,8 @@ static public Number divide(BigInteger n, BigInteger d){
 	d = d.divide(gcd);
 	if(d.equals(BigInteger.ONE))
 		return reduce(n);
+	else if(d.equals(BigInteger.ONE.negate()))
+		return reduce(n.negate());
 	return new Ratio((d.signum() < 0 ? n.negate() : n),
 	                 (d.signum() < 0 ? d.negate() : d));
 }
@@ -476,14 +478,14 @@ final static class IntegerOps implements Ops{
 		int val = x.intValue();
 		if(val < Integer.MAX_VALUE)
 			return val + 1;
-		return BigInteger.valueOf((long) val + 1);
+		return (long) val + 1;
 	}
 
 	public Number dec(Number x){
 		int val = x.intValue();
 		if(val > Integer.MIN_VALUE)
 			return val - 1;
-		return BigInteger.valueOf((long) val - 1);
+		return (long) val - 1;
 	}
 }
 

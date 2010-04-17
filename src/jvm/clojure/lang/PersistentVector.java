@@ -110,6 +110,12 @@ public Object nth(int i){
 	return node[i & 0x01f];
 }
 
+public Object nth(int i, Object notFound){
+	if(i >= 0 && i < cnt)
+		return nth(i);
+	return notFound;
+}
+
 public PersistentVector assocN(int i, Object val){
 	if(i >= 0 && i < cnt)
 		{
@@ -227,10 +233,10 @@ public ISeq seq(){
 
 static public final class ChunkedSeq extends ASeq implements IChunkedSeq{
 
-	final PersistentVector vec;
+	public final PersistentVector vec;
 	final Object[] node;
 	final int i;
-	final int offset;
+	public final int offset;
 
 	public ChunkedSeq(PersistentVector vec, int i, int offset){
 		this.vec = vec;
@@ -540,6 +546,12 @@ static final class TransientVector extends AFn implements ITransientVector, Coun
 		ensureEditable();
 		Object[] node = arrayFor(i);
 		return node[i & 0x01f];
+	}
+
+	public Object nth(int i, Object notFound){
+		if(i >= 0 && i < count())
+			return nth(i);
+		return notFound;
 	}
 
 	public TransientVector assocN(int i, Object val){

@@ -3067,7 +3067,6 @@ static public class FnExpr extends ObjExpr{
 	FnMethod variadicMethod = null;
 	IPersistentCollection methods;
 	//	String superName = null;
-	boolean onceOnly = false;
 
 	public FnExpr(Object tag){
 		super(tag);
@@ -3106,6 +3105,7 @@ static public class FnExpr extends ObjExpr{
 	static Expr parse(C context, ISeq form, String name) throws Exception{
 		ISeq origForm = form;
 		FnExpr fn = new FnExpr(tagOf(form));
+		fn.src = form;
 		ObjMethod enclosingMethod = (ObjMethod) METHOD.deref();
 		if(((IMeta) form.first()).meta() != null)
 			{
@@ -3251,6 +3251,9 @@ static public class ObjExpr implements Expr{
 	IPersistentVector keywordCallsites;
 	IPersistentVector protocolCallsites;
 	IPersistentVector varCallsites;
+	boolean onceOnly = false;
+
+	Object src;
 
 	final static Method voidctor = Method.getMethod("void <init>()");
 
@@ -3915,18 +3918,18 @@ static public class ObjExpr implements Expr{
 	}
 
 	void emitClearCloses(GeneratorAdapter gen){
-		int a = 1;
-		for(ISeq s = RT.keys(closes); s != null; s = s.next(), ++a)
-			{
-			LocalBinding lb = (LocalBinding) s.first();
-			Class primc = lb.getPrimitiveType();
-			if(primc == null)
-				{
-				gen.loadThis();
-				gen.visitInsn(Opcodes.ACONST_NULL);
-				gen.putField(objtype, lb.name, OBJECT_TYPE);
-				}
-			}
+//		int a = 1;
+//		for(ISeq s = RT.keys(closes); s != null; s = s.next(), ++a)
+//			{
+//			LocalBinding lb = (LocalBinding) s.first();
+//			Class primc = lb.getPrimitiveType();
+//			if(primc == null)
+//				{
+//				gen.loadThis();
+//				gen.visitInsn(Opcodes.ACONST_NULL);
+//				gen.putField(objtype, lb.name, OBJECT_TYPE);
+//				}
+//			}
 	}
 
 	synchronized Class getCompiledClass(){
@@ -3938,7 +3941,7 @@ static public class ObjExpr implements Expr{
 				else
 					{
 					loader = (DynamicClassLoader) LOADER.deref();
-					compiledClass = loader.defineClass(name, bytecode);
+					compiledClass = loader.defineClass(name, bytecode, src);
 					}
 				}
 			catch(Exception e)
@@ -4014,7 +4017,9 @@ static public class ObjExpr implements Expr{
 	}
 
 	public Class getJavaClass() throws Exception{
-		return (tag != null) ? HostExpr.tagToClass(tag) : IFn.class;
+		return (compiledClass != null) ? compiledClass
+			: (tag != null) ? HostExpr.tagToClass(tag)
+			: IFn.class;
 	}
 
 	public void emitAssignLocal(GeneratorAdapter gen, LocalBinding lb,Expr val){
@@ -4048,7 +4053,15 @@ static public class ObjExpr implements Expr{
 				HostExpr.emitBoxReturn(this, gen, primc);
 				}
 			else
+				{
 				gen.getField(objtype, lb.name, OBJECT_TYPE);
+				if(onceOnly && clear && lb.canBeCleared)
+					{
+					gen.loadThis();
+					gen.visitInsn(Opcodes.ACONST_NULL);
+					gen.putField(objtype, lb.name, OBJECT_TYPE);
+					}
+				}
 			}
 		else
 			{
@@ -4232,7 +4245,9 @@ public static class FnMethod extends ObjMethod{
 			FnMethod method = new FnMethod(objx, (ObjMethod) METHOD.deref());
 			method.line = (Integer) LINE.deref();
 			//register as the current method and set up a new env frame
-            PathNode pnode =  new PathNode(PATHTYPE.PATH, (PathNode) CLEAR_PATH.get());
+            PathNode pnode =  (PathNode) CLEAR_PATH.get();
+			if(pnode == null)
+				pnode = new PathNode(PATHTYPE.PATH,null);
 			Var.pushThreadBindings(
 					RT.map(
 							METHOD, method,
@@ -4328,30 +4343,30 @@ public static class FnMethod extends ObjMethod{
 	}
 
 	void emitClearLocals(GeneratorAdapter gen){
-		for(int i = 1; i < numParams() + 1; i++)
-			{
-			if(!localsUsedInCatchFinally.contains(i))
-				{
-				gen.visitInsn(Opcodes.ACONST_NULL);
-				gen.visitVarInsn(OBJECT_TYPE.getOpcode(Opcodes.ISTORE), i);
-				}
-			}
-		for(int i = numParams() + 1; i < maxLocal + 1; i++)
-			{
-			if(!localsUsedInCatchFinally.contains(i))
-				{
-				LocalBinding b = (LocalBinding) RT.get(indexlocals, i);
-				if(b == null || maybePrimitiveType(b.init) == null)
-					{
-					gen.visitInsn(Opcodes.ACONST_NULL);
-					gen.visitVarInsn(OBJECT_TYPE.getOpcode(Opcodes.ISTORE), i);
-					}
-				}
-			}
-		if(((FnExpr)objx).onceOnly)
-			{
-			objx.emitClearCloses(gen);
-			}
+//		for(int i = 1; i < numParams() + 1; i++)
+//			{
+//			if(!localsUsedInCatchFinally.contains(i))
+//				{
+//				gen.visitInsn(Opcodes.ACONST_NULL);
+//				gen.visitVarInsn(OBJECT_TYPE.getOpcode(Opcodes.ISTORE), i);
+//				}
+//			}
+//		for(int i = numParams() + 1; i < maxLocal + 1; i++)
+//			{
+//			if(!localsUsedInCatchFinally.contains(i))
+//				{
+//				LocalBinding b = (LocalBinding) RT.get(indexlocals, i);
+//				if(b == null || maybePrimitiveType(b.init) == null)
+//					{
+//					gen.visitInsn(Opcodes.ACONST_NULL);
+//					gen.visitVarInsn(OBJECT_TYPE.getOpcode(Opcodes.ISTORE), i);
+//					}
+//				}
+//			}
+//		if(((FnExpr)objx).onceOnly)
+//			{
+//			objx.emitClearCloses(gen);
+//			}
 	}
 }
 
@@ -5185,8 +5200,8 @@ static public IFn isInline(Object op, int arity) throws Exception{
 			IFn ret = (IFn) RT.get(v.meta(), inlineKey);
 			if(ret != null)
 				{
-				IPersistentSet arities = (IPersistentSet) RT.get(v.meta(), inlineAritiesKey);
-				if(arities == null || arities.contains(arity))
+				IFn arityPred = (IFn) RT.get(v.meta(), inlineAritiesKey);
+				if(arityPred == null || RT.booleanCast(arityPred.invoke(arity)))
 					return ret;
 				}
 			}
@@ -5606,7 +5621,8 @@ static public Object maybeResolveIn(Namespace n, Symbol sym) throws Exception{
 			return null;
 		return v;
 		}
-	else if(sym.name.indexOf('.') > 0 || sym.name.charAt(0) == '[')
+	else if(sym.name.indexOf('.') > 0 && !sym.name.endsWith(".") 
+			|| sym.name.charAt(0) == '[')
 		{
 		return RT.classForName(sym.name);
 		}
@@ -5975,7 +5991,7 @@ static public class NewInstanceExpr extends ObjExpr{
 	}
 
 	static class DeftypeParser implements IParser{
-		public Expr parse(C context, Object frm) throws Exception{
+		public Expr parse(C context, final Object frm) throws Exception{
 			ISeq rform = (ISeq) frm;
 			//(deftype* tagname classname [fields] :implements [interfaces] :tag tagname methods*)
 			rform = RT.next(rform);
@@ -5992,8 +6008,9 @@ static public class NewInstanceExpr extends ObjExpr{
 				rform = rform.next().next();
 				}
 
-			return build((IPersistentVector)RT.get(opts,implementsKey,PersistentVector.EMPTY),fields,null,tagname, classname,
-			             (Symbol) RT.get(opts,RT.TAG_KEY),rform);
+			ObjExpr ret = build((IPersistentVector)RT.get(opts,implementsKey,PersistentVector.EMPTY),fields,null,tagname, classname,
+			             (Symbol) RT.get(opts,RT.TAG_KEY),rform, frm);
+			return ret;
 		}
 	}
 
@@ -6010,21 +6027,27 @@ static public class NewInstanceExpr extends ObjExpr{
 
 		ISeq rform = RT.next(form);
 
-		IPersistentVector interfaces = (IPersistentVector) RT.first(rform);
+		IPersistentVector interfaces = ((IPersistentVector) RT.first(rform)).cons(Symbol.intern("clojure.lang.IObj"));
 
 
 		rform = RT.next(rform);
 
 
-		return build(interfaces, null, null, classname, classname, null, rform);
+		ObjExpr ret = build(interfaces, null, null, classname, classname, null, rform, frm);
+		if(frm instanceof IObj && ((IObj) frm).meta() != null)
+			return new MetaExpr(ret, (MapExpr) MapExpr
+					.parse(context == C.EVAL ? context : C.EXPRESSION, ((IObj) frm).meta()));
+		else
+			return ret;
 	}
 	}
 
 	static ObjExpr build(IPersistentVector interfaceSyms, IPersistentVector fieldSyms, Symbol thisSym,
 	                     String tagName, String className,
-	                  Symbol typeTag, ISeq methodForms) throws Exception{
+	                  Symbol typeTag, ISeq methodForms, Object frm) throws Exception{
 		NewInstanceExpr ret = new NewInstanceExpr(null);
 
+		ret.src = frm;
 		ret.name = className;
 		ret.internalName = ret.name.replace('.', '/');
 		ret.objtype = Type.getObjectType(ret.internalName);
@@ -6044,8 +6067,6 @@ static public class NewInstanceExpr extends ObjExpr{
 				fmap = fmap.assoc(sym, lb);
 				closesvec[i*2] = lb;
 				closesvec[i*2 + 1] = lb;
-				if(!sym.name.startsWith("__"))
-					compileLookupThunk(ret, sym);
 				}
 
 			//todo - inject __meta et al into closes - when?
@@ -6075,7 +6096,7 @@ static public class NewInstanceExpr extends ObjExpr{
 		
 		String[] inames = interfaceNames(interfaces);
 
-		Class stub = compileStub(slashname(superClass),ret, inames);
+		Class stub = compileStub(slashname(superClass),ret, inames, frm);
 		Symbol thistag = Symbol.intern(null,stub.getName());
 
 		try
@@ -6135,7 +6156,7 @@ static public class NewInstanceExpr extends ObjExpr{
 	 * Use it as a type hint for this, and bind the simple name of the class to this stub (in resolve etc)
 	 * Unmunge the name (using a magic prefix) on any code gen for classes
 	 */
-	static Class compileStub(String superName, NewInstanceExpr ret, String[] interfaceNames){
+	static Class compileStub(String superName, NewInstanceExpr ret, String[] interfaceNames, Object frm){
 		ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_MAXS);
 		ClassVisitor cv = cw;
 		cv.visit(V1_5, ACC_PUBLIC + ACC_SUPER, COMPILE_STUB_PREFIX + "/" + ret.internalName,
@@ -6200,72 +6221,7 @@ static public class NewInstanceExpr extends ObjExpr{
 
 		byte[] bytecode = cw.toByteArray();
 		DynamicClassLoader loader = (DynamicClassLoader) LOADER.deref();
-		return loader.defineClass(COMPILE_STUB_PREFIX + "." + ret.name, bytecode);		
-	}
-
-	static Class compileLookupThunk(NewInstanceExpr ret, Symbol fld) throws Exception{
-				//String superName, NewInstanceExpr ret, String[] interfaceNames){
-		ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_MAXS);
-		ClassVisitor cv = cw;
-		String iname = ret.internalName + "$__lookup__" + fld.name;
-		String cname = ret.name + "$__lookup__" + fld.name;
-		Class fclass = tagClass(tagOf(fld));
-
-		//workaround until full support for type-hinted non-primitive fields
-		if(!fclass.isPrimitive())
-			fclass = Object.class;
-
-		Type ftype = Type.getType(fclass);
-		cv.visit(V1_5, ACC_PUBLIC + ACC_SUPER + ACC_FINAL, iname,
-		         null,"java/lang/Object",new String[]{"clojure/lang/ILookupThunk"});
-
-		GeneratorAdapter ctorgen = new GeneratorAdapter(ACC_PUBLIC,
-		                                                voidctor,
-		                                                null,
-		                                                null,
-		                                                cv);
-		ctorgen.visitCode();
-		ctorgen.loadThis();
-		ctorgen.invokeConstructor(OBJECT_TYPE, voidctor);
-		ctorgen.returnValue();
-		ctorgen.endMethod();
-
-        Method meth = Method.getMethod("Object get(Object)");
-
-		GeneratorAdapter gen = new GeneratorAdapter(ACC_PUBLIC,
-											meth,
-											null,
-											null,
-											cv);
-		gen.visitCode();
-		Label faultLabel = gen.newLabel();
-		Label endLabel = gen.newLabel();
-
-		gen.loadArg(0);
-		gen.dup();
-		gen.instanceOf(ret.objtype);
-		gen.ifZCmp(GeneratorAdapter.EQ, faultLabel);
-		gen.checkCast(ret.objtype);
-		gen.getField(ret.objtype, munge(fld.name), ftype);
-		HostExpr.emitBoxReturn(ret,gen,fclass);
-		gen.goTo(endLabel);
-
-		gen.mark(faultLabel);
-		gen.pop();
-		gen.loadThis();
-
-		gen.mark(endLabel);
-		gen.returnValue();
-		gen.endMethod();
-
-		//end of class
-		cv.visitEnd();
-
-		byte[] bytecode = cw.toByteArray();
-		if(RT.booleanCast(COMPILE_FILES.deref()))
-			writeClassFile(iname, bytecode);
-		DynamicClassLoader loader = (DynamicClassLoader) LOADER.deref();
-		return loader.defineClass(cname, bytecode);
+		return loader.defineClass(COMPILE_STUB_PREFIX + "." + ret.name, bytecode, frm);
 	}
 
 	static String[] interfaceNames(IPersistentVector interfaces){
@@ -6822,7 +6778,7 @@ public static class CaseExpr extends UntypedExpr{
                 try {
                     Var.pushThreadBindings(
                             RT.map(CLEAR_PATH, new PathNode(PATHTYPE.PATH,branch)));
-                    thenExpr = analyze(C.EXPRESSION, me.getValue());
+                    thenExpr = analyze(context, me.getValue());
                     }
                 finally{
                     Var.popThreadBindings();
@@ -6834,7 +6790,7 @@ public static class CaseExpr extends UntypedExpr{
             try {
                 Var.pushThreadBindings(
                         RT.map(CLEAR_PATH, new PathNode(PATHTYPE.PATH,branch)));
-                defaultExpr = analyze(C.EXPRESSION, args.nth(5));
+                defaultExpr = analyze(context, args.nth(5));
                 }
             finally{
                 Var.popThreadBindings();

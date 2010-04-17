@@ -283,13 +283,13 @@
   Returns a new hash map with supplied mappings."
   ([] {})
   ([& keyvals]
-   (. clojure.lang.PersistentHashMap (create keyvals))))
+   (. clojure.lang.PersistentHashMap (createWithCheck keyvals))))
 
 (defn hash-set
   "Returns a new hash set with supplied keys."
   ([] #{})
   ([& keys]
-   (clojure.lang.PersistentHashSet/create keys)))
+   (clojure.lang.PersistentHashSet/createWithCheck keys)))
 
 (defn sorted-map
   "keyval => key val
@@ -553,7 +553,7 @@
 ;;;;;;;;;;;;;;;;at this point all the support for syntax-quote exists;;;;;;;;;;;;;;;;;;;;;;
 (defmacro delay
   "Takes a body of expressions and yields a Delay object that will
-  invoke the body only the first time it is forced (with force), and
+  invoke the body only the first time it is forced (with force or deref/@), and
   will cache the result and return it on all subsequent force
   calls."  
   [& body]
@@ -651,6 +651,8 @@
 (defn count
   "Returns the number of items in the collection. (count nil) returns
   0.  Also works on strings, arrays, and Java Collections and Maps"
+  {:tag Integer
+   :inline (fn  [x] `(. clojure.lang.RT (count ~x)))}
   [coll] (clojure.lang.RT/count coll))
 
 (defn int
@@ -688,16 +690,8 @@
   {:inline (fn [x] `(. clojure.lang.Numbers (inc ~x)))}
   [x] (. clojure.lang.Numbers (inc x)))
 
+;; reduce is defined again later after InternalReduce loads
 (defn reduce
-  "f should be a function of 2 arguments. If val is not supplied,
-  returns the result of applying f to the first 2 items in coll, then
-  applying f to that result and the 3rd item, etc. If coll contains no
-  items, f must accept no arguments as well, and reduce returns the
-  result of calling f with no arguments.  If coll has only 1 item, it
-  is returned and f is not called.  If val is supplied, returns the
-  result of applying f to val and the first item in coll, then
-  applying f to that result and the 2nd item, etc. If coll contains no
-  items, returns val and f is not called."
   ([f coll]
    (let [s (seq coll)]
      (if s
@@ -1023,6 +1017,8 @@
 
 (defn get
   "Returns the value mapped to key, not-found or nil if key not present."
+  {:inline (fn  [m k & nf] `(. clojure.lang.RT (get ~m ~k ~@nf)))
+   :inline-arities #{2 3}}
   ([map key]
    (. clojure.lang.RT (get map key)))
   ([map key not-found]
@@ -1800,19 +1796,12 @@
    (fn [& args] (apply f arg1 arg2 arg3 (concat more args)))))
 
 ;;;;;;;;;;;;;;;;;;; sequence fns  ;;;;;;;;;;;;;;;;;;;;;;;
-(defn stream? 
-  "Returns true if x is an instance of Stream"
-  [x] (instance? clojure.lang.Stream x))
-
-
 (defn sequence
   "Coerces coll to a (possibly empty) sequence, if it is not already
   one. Will not force a lazy seq. (sequence nil) yields ()"  
   [coll]
-   (cond 
-    (seq? coll) coll
-    (stream? coll) (.sequence #^clojure.lang.Stream coll)
-    :else (or (seq coll) ())))
+   (if (seq? coll) coll
+    (or (seq coll) ())))
 
 (defn every?
   "Returns true if (pred x) is logical true for every x in coll, else
@@ -2322,11 +2311,7 @@
 (defn type 
   "Returns the :type metadata of x, or its Class if none"
   [x]
-  (or (:type (meta x)) 
-      (if (instance? clojure.lang.IDynamicType x)
-        (let [x #^ clojure.lang.IDynamicType x]
-          (.getDynamicType x))
-        (class x))))
+  (or (:type (meta x)) (class x)))
 
 (defn num
   "Coerce to Number"
@@ -2401,6 +2386,18 @@
 (defn ratio?
   "Returns true if n is a Ratio"
   [n] (instance? clojure.lang.Ratio n))
+
+(defn numerator
+ "Returns the numerator part of a Ratio."
+ {:tag BigInteger}
+ [r]
+  (.numerator #^clojure.lang.Ratio r))
+
+(defn denominator
+ "Returns the denominator part of a Ratio."
+ {:tag BigInteger}
+ [r]
+  (.denominator #^clojure.lang.Ratio r))
 
 (defn decimal?
   "Returns true if n is a BigDecimal"
@@ -2761,7 +2758,7 @@
 
 (defn set
   "Returns a set of the distinct elements of coll."
-  [coll] (apply hash-set coll))
+  [coll] (clojure.lang.PersistentHashSet/create #^clojure.lang.ISeq (seq coll)))
 
 (defn #^{:private true}
   filter-key [keyfn pred amap]
@@ -2959,7 +2956,7 @@
 (defn array-map
   "Constructs an array-map."
   ([] (. clojure.lang.PersistentArrayMap EMPTY))
-  ([& keyvals] (new clojure.lang.PersistentArrayMap (to-array keyvals))))
+  ([& keyvals] (clojure.lang.PersistentArrayMap/createWithCheck (to-array keyvals))))
 
 (defn nthnext
   "Returns the nth next of coll, (seq coll) when n is 0."
@@ -2972,7 +2969,7 @@
 
 ;redefine let and loop  with destructuring
 (defn destructure [bindings]
-  (let [bmap (apply array-map bindings)
+  (let [bents (partition 2 bindings)
         pb (fn pb [bvec b v]
                (let [pvec
                      (fn [bvec b val]
@@ -3000,7 +2997,8 @@
                      (fn [bvec b v]
                        (let [gmap (or (:as b) (gensym "map__"))
                              defaults (:or b)]
-                         (loop [ret (-> bvec (conj gmap) (conj v))
+                         (loop [ret (-> bvec (conj gmap) (conj v)
+                                        (conj gmap) (conj `(if (seq? ~gmap) (apply hash-map ~gmap) ~gmap)))
                                 bes (reduce
                                      (fn [bes entry]
                                        (reduce #(assoc %1 %2 ((val entry) %2))
@@ -3022,10 +3020,10 @@
                   (vector? b) (pvec bvec b v)
                   (map? b) (pmap bvec b v)
                   :else (throw (new Exception (str "Unsupported binding form: " b))))))
-        process-entry (fn [bvec b] (pb bvec (key b) (val b)))]
-    (if (every? symbol? (keys bmap))
+        process-entry (fn [bvec b] (pb bvec (first b) (second b)))]
+    (if (every? symbol? (map first bents))
       bindings
-      (reduce process-entry [] bmap))))
+      (reduce process-entry [] bents))))
 
 (defmacro let
   "Evaluates the exprs in a lexical context in which the symbols in
@@ -3593,9 +3591,11 @@
                  (if ((mk-bound-fn sc end-test end-key) e) s (next s))))))
 
 (defn repeatedly
-  "Takes a function of no args, presumably with side effects, and returns an infinite
-  lazy sequence of calls to it"
-  [f] (lazy-seq (cons (f) (repeatedly f))))
+  "Takes a function of no args, presumably with side effects, and
+  returns an infinite (or length n if supplied) lazy sequence of calls
+  to it" 
+  ([f] (lazy-seq (cons (f) (repeatedly f))))
+  ([n f] (take n (repeatedly f))))
 
 (defn add-classpath
   "DEPRECATED 
@@ -3799,6 +3799,18 @@
   "Atomically alters the root binding of var v by applying f to its
   current value plus any args"
   [#^clojure.lang.Var v f & args] (.alterRoot v f args))
+
+(defn bound?
+  "Returns true if all of the vars provided as arguments have any bound value, root or thread-local.
+   Implies that deref'ing the provided vars will succeed. Returns true if no vars are provided."
+  [& vars]
+  (every? #(.isBound #^clojure.lang.Var %) vars))
+
+(defn thread-bound?
+  "Returns true if all of the vars provided as arguments have thread-local bindings.
+   Implies that set!'ing the provided vars will succeed.  Returns true if no vars are provided."
+  [& vars]
+  (every? #(.getThreadBinding #^clojure.lang.Var %) vars))
 
 (defn make-hierarchy
   "Creates a hierarchy object for use with derive, isa? etc."
@@ -4204,6 +4216,14 @@
   (let [flags (filter keyword? args)
         opts (interleave flags (repeat true))
         args (filter (complement keyword?) args)]
+    ; check for unsupported options
+    (let [supported #{:as :reload :reload-all :require :use :verbose} 
+          unsupported (seq (remove supported flags))]
+      (throw-if unsupported
+                (apply str "Unsupported option(s) supplied: "
+                     (interpose \, unsupported))))
+    ; check a load target was specified
+    (throw-if (not (seq args)) "Nothing specified to load")
     (doseq [arg args]
       (if (libspec? arg)
         (apply load-lib nil (prependss arg opts))
@@ -4676,7 +4696,28 @@
 (load "core_print")
 (load "genclass")
 (load "core_deftype")
+(load "core/protocols")
 (load "gvec")
+
+;; redefine reduce with internal-reduce
+(defn- reduce-new
+  "f should be a function of 2 arguments. If val is not supplied,
+  returns the result of applying f to the first 2 items in coll, then
+  applying f to that result and the 3rd item, etc. If coll contains no
+  items, f must accept no arguments as well, and reduce returns the
+  result of calling f with no arguments.  If coll has only 1 item, it
+  is returned and f is not called.  If val is supplied, returns the
+  result of applying f to val and the first item in coll, then
+  applying f to that result and the 2nd item, etc. If coll contains no
+  items, returns val and f is not called."
+  ([f coll]
+     (if-let [s (seq coll)]
+       (reduce f (first s) (next s))
+       (f)))
+  ([f start coll]
+     (let [s (seq coll)]
+       (clojure.core.protocols/internal-reduce s f start))))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;; futures (needs proxy);;;;;;;;;;;;;;;;;;
 (defn future-call 
   "Takes a function of no args and yields a future object that will
@@ -4687,13 +4728,13 @@
   (let [fut (.submit clojure.lang.Agent/soloExecutor f)]
     (reify 
      clojure.lang.IDeref 
-      (deref [] (.get fut))
+      (deref [_] (.get fut))
      java.util.concurrent.Future
-      (get [] (.get fut))
-      (get [timeout unit] (.get fut timeout unit))
-      (isCancelled [] (.isCancelled fut))
-      (isDone [] (.isDone fut))
-      (cancel [interrupt?] (.cancel fut interrupt?)))))
+      (get [_] (.get fut))
+      (get [_ timeout unit] (.get fut timeout unit))
+      (isCancelled [_] (.isCancelled fut))
+      (isDone [_] (.isDone fut))
+      (cancel [_ interrupt?] (.cancel fut interrupt?)))))
   
 (defmacro future
   "Takes a body of expressions and yields a future object that will
@@ -4790,11 +4831,11 @@
   []
   (let [d (java.util.concurrent.CountDownLatch. 1)
         v (atom nil)]
-    (reify :as this 
+    (reify 
      clojure.lang.IDeref
-      (deref [] (.await d) @v)
+      (deref [_] (.await d) @v)
      clojure.lang.IFn
-      (invoke [x]
+      (invoke [this x]
         (locking d
           (if (pos? (.getCount d))
             (do (reset! v x)
