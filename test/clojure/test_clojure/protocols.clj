@@ -10,7 +10,32 @@
 
 (ns clojure.test-clojure.protocols
   (:use clojure.test clojure.test-clojure.protocols.examples)
-  (:require [clojure.test-clojure.protocols.more-examples :as other]))
+  (:require [clojure.test-clojure.protocols.more-examples :as other])
+  (:import [clojure.test_clojure.protocols.examples ExampleInterface]))
+
+(defn causes
+  [^Throwable throwable]
+  (loop [causes []
+         t throwable]
+    (if t (recur (conj causes t) (.getCause t)) causes)))
+
+;; this is how I wish clojure.test/thrown? worked...
+;; Does body throw expected exception, anywhere in the .getCause chain?
+(defmethod assert-expr 'fails-with-cause?
+  [msg [_ exception-class msg-re & body :as form]]
+  `(try
+   ~@body
+   (report {:type :fail, :message ~msg, :expected '~form, :actual nil})
+   (catch Throwable t#
+     (if (some (fn [cause#]
+                 (and
+                  (= ~exception-class (class cause#))
+                  (re-find ~msg-re (.getMessage cause#))))
+               (causes t#))
+       (report {:type :pass, :message ~msg,
+                :expected '~form, :actual t#})
+       (report {:type :fail, :message ~msg,
+                :expected '~form, :actual t#})))))
 
 ;; temporary hack until I decide how to cleanly reload protocol
 (defn reload-example-protocols
@@ -29,6 +54,16 @@
   (->> (.getMethods c)
      (map #(.getName %))
      (sort)))
+
+(defrecord EmptyRecord [])
+(defrecord TestRecord [a b])
+(defn r
+  ([a b] (TestRecord. a b))
+  ([a b meta ext] (TestRecord. a b meta ext)))
+(defrecord MapEntry [k v]
+  java.util.Map$Entry
+  (getKey [_] k)
+  (getValue [_] v))
 
 (deftest protocols-test
   (testing "protocol fns throw IllegalArgumentException if no impl matches"
@@ -50,6 +85,9 @@
       (is (thrown? AbstractMethodError (baz obj))))))
 
 (deftype ExtendTestWidget [name])
+(deftype HasProtocolInline []
+  ExampleProtocol
+  (foo [this] :inline))
 (deftest extend-test
   (testing "you can extend a protocol to a class"
     (extend String ExampleProtocol
@@ -65,6 +103,18 @@
      ExampleProtocol
      {:foo (fn [this] (str "widget " (.name this)))})
     (is (= "widget z" (foo (ExtendTestWidget. "z"))))))
+
+(deftest illegal-extending
+  (testing "you cannot extend a protocol to a type that implements the protocol inline"
+    (is (fails-with-cause? IllegalArgumentException #".*HasProtocolInline already directly implements interface"
+          (eval '(extend clojure.test-clojure.protocols.HasProtocolInline
+                         clojure.test-clojure.protocols.examples/ExampleProtocol
+                         {:foo (fn [_] :extended)})))))
+  (testing "you cannot extend to an interface"
+    (is (fails-with-cause? IllegalArgumentException #"interface clojure.test_clojure.protocols.examples.ExampleProtocol is not a protocol"
+          (eval '(extend clojure.test-clojure.protocols.HasProtocolInline
+                         clojure.test_clojure.protocols.examples.ExampleProtocol
+                         {:foo (fn [_] :extended)}))))))
 
 (deftype ExtendsTestWidget []
   ExampleProtocol)
@@ -143,9 +193,105 @@
     (is (= (.hashCode (DefrecordObjectMethodsWidgetB. 1)) (.hashCode (DefrecordObjectMethodsWidgetB. 1))))
     (is (not= (.hashCode (DefrecordObjectMethodsWidgetA. 1)) (.hashCode (DefrecordObjectMethodsWidgetB. 1))))))
 
-;; todo
-;; what happens if you extend after implementing directly? Extend is ignored!!
-;; extend-type extend-protocol extend-class
-;; maybe: find-protocol-impl find-protocol-method
-;; deftype, printable forms
-;; reify, definterface
+(deftest defrecord-acts-like-a-map
+  (let [rec (r 1 2)]
+    (is (= (r 1 3 {} {:c 4}) (merge rec {:b 3 :c 4})))))
+
+(deftest defrecord-interfaces-test
+  (testing "java.util.Map"
+    (let [rec (r 1 2)]
+      (is (= 2 (.size rec)))
+      (is (= 3 (.size (assoc rec :c 3))))
+      (is (not (.isEmpty rec)))
+      (is (.isEmpty (EmptyRecord.)))
+      (is (.containsKey rec :a))
+      (is (not (.containsKey rec :c)))
+      (is (.containsValue rec 1))
+      (is (not (.containsValue rec 3)))
+      (is (= 1 (.get rec :a)))
+      (is (thrown? UnsupportedOperationException (.put rec :a 1)))
+      (is (thrown? UnsupportedOperationException (.remove rec :a)))
+      (is (thrown? UnsupportedOperationException (.putAll rec {})))
+      (is (thrown? UnsupportedOperationException (.clear rec)))
+      (is (= #{:a :b} (.keySet rec)))
+      (is (= #{1 2} (set (.values rec))))
+      (is (= #{[:a 1] [:b 2]} (.entrySet rec)))
+      
+      ))
+  (testing "IPersistentCollection"
+    (testing ".cons"
+      (let [rec (r 1 2)]
+        (are [x] (= rec (.cons rec x))
+             nil {})
+        (is (= (r 1 3) (.cons rec {:b 3})))
+        (is (= (r 1 4) (.cons rec [:b 4])))
+        (is (= (r 1 5) (.cons rec (MapEntry. :b 5))))))))
+
+(deftest reify-test
+  (testing "of an interface"
+    (let [s :foo
+          r (reify
+             java.util.List
+             (contains [_ o] (= s o)))]
+      (testing "implemented methods"
+        (is (true? (.contains r :foo)))
+        (is (false? (.contains r :bar))))
+      (testing "unimplemented methods"
+        (is (thrown? AbstractMethodError (.add r :baz))))))
+  (testing "of two interfaces"
+    (let [r (reify
+             java.util.List
+             (contains [_ o] (= :foo o))
+             java.util.Collection
+             (isEmpty [_] false))]
+      (is (true? (.contains r :foo)))
+      (is (false? (.contains r :bar)))
+      (is (false? (.isEmpty r)))))
+  (testing "you can't define a method twice"
+    (is (fails-with-cause?
+         java.lang.ClassFormatError #"^(Repetitive|Duplicate) method name"
+         (eval '(reify
+                 java.util.List
+                 (size [_] 10)
+                 java.util.Collection
+                 (size [_] 20))))))
+  (testing "you can't define a method not on an interface/protocol/j.l.Object"
+    (is (fails-with-cause? 
+         IllegalArgumentException #"^Can't define method not in interfaces: foo"
+         (eval '(reify java.util.List (foo [_]))))))
+  (testing "of a protocol"
+    (let [r (reify
+             ExampleProtocol
+             (bar [this o] o)
+             (baz [this] 1)
+             (baz [this o] 2))]
+      (= :foo (.bar r :foo))
+      (= 1 (.baz r))
+      (= 2 (.baz r nil))))
+  (testing "destructuring in method def"
+    (let [r (reify
+             ExampleProtocol
+             (bar [this [_ _ item]] item))]
+      (= :c (.bar r [:a :b :c]))))
+  (testing "methods can recur"
+    (let [r (reify
+             java.util.List
+             (get [_ index]
+                  (if (zero? index)
+                    :done
+                    (recur (dec index)))))]
+      (is (= :done (.get r 0)))
+      (is (= :done (.get r 1)))))
+  (testing "disambiguating with type hints"
+    (testing "you must hint an overloaded method"
+      (is (fails-with-cause?
+            IllegalArgumentException #"Must hint overloaded method: hinted"
+            (eval '(reify clojure.test_clojure.protocols.examples.ExampleInterface (hinted [_ o]))))))
+    (testing "hinting"
+      (let [r (reify
+               ExampleInterface
+               (hinted [_ ^int i] (inc i))
+               (hinted [_ ^String s] (str s s)))]
+        (is (= 2 (.hinted r 1)))
+        (is (= "xoxo" (.hinted r "xo")))))))
+

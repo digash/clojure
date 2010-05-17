@@ -104,6 +104,7 @@
       <arg value="clojure.test"/>
       <arg value="clojure.test.tap"/>
       <arg value="clojure.test.junit"/>
+      <arg value="clojure.pprint"/>
     </java>
   </target>
 
@@ -116,6 +117,7 @@
           failonerror="true">
       <sysproperty key="clojure.compile.path" value="${test-classes}"/>
       <arg value="clojure.test-clojure.protocols.examples"/>
+      <arg value="clojure.test-clojure.genclass.examples"/>
     </java>
   </target>
 

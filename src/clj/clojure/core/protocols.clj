@@ -24,11 +24,13 @@
   (internal-reduce
    [s f val]
    (if-let [s (seq s)]
-     (recur (chunk-next s)
-            f
-            (.reduce (chunk-first s) f val))
+     (if (chunked-seq? s)
+       (recur (chunk-next s)
+              f
+              (.reduce (chunk-first s) f val))
+       (internal-reduce s f val))
      val))
-
+ 
   clojure.lang.StringSeq
   (internal-reduce
    [str-seq f val]
@@ -42,7 +44,7 @@
   clojure.lang.ArraySeq
   (internal-reduce
        [a-seq f val]
-       (let [#^objects arr (.array a-seq)]
+       (let [^objects arr (.array a-seq)]
          (loop [i (.index a-seq)
                 val val]
            (if (< i (alength arr))

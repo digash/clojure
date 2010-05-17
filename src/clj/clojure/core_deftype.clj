@@ -10,15 +10,20 @@
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;; definterface ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+(defn namespace-munge
+  "Convert a Clojure namespace name to a legal Java package name."
+  {:added "1.2"}
+  [ns]
+  (.replace (str ns) \- \_))
+
 ;for now, built on gen-interface
 (defmacro definterface 
   [name & sigs]
   (let [tag (fn [x] (or (:tag (meta x)) Object))
         psig (fn [[name [& args]]]
-               (vector name (vec (map tag args)) (tag name)))
-        cname (symbol (str *ns* "." name))]
+               (vector name (vec (map tag args)) (tag name) (map meta args)))
+        cname (with-meta (symbol (str (namespace-munge *ns*) "." name)) (meta name))]
     `(do (gen-interface :name ~cname :methods ~(vec (map psig sigs)))
-         (ns-unmap (find-ns '~(ns-name *ns*)) '~name)
          (import ~cname))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;; reify/deftype ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -46,7 +51,9 @@
                        set
                        (disj 'Object 'java.lang.Object)
                        vec)
-        methods (apply concat (vals impls))]
+        methods (map (fn [[name params & body]]
+                       (cons name (maybe-destructured params body)))
+                     (apply concat (vals impls)))]
     (when-let [bad-opts (seq (remove #{:no-print} (keys opts)))]
       (throw (IllegalArgumentException. (apply print-str "Unsupported option(s) -" bad-opts))))
     [interfaces methods opts]))
@@ -96,7 +103,7 @@
        (reify clojure.lang.Seqable 
          (seq [] (seq f)))))
   == (\\f \\o \\o))"
-
+  {:added "1.2"} 
   [& opts+specs]
   (let [[interfaces methods] (parse-opts+specs opts+specs)]
     (with-meta `(reify* ~interfaces ~@methods) (meta &form))))
@@ -107,11 +114,28 @@
 (defn munge [s]
   ((if (symbol? s) symbol str) (clojure.lang.Compiler/munge (str s))))
 
+(defn- imap-cons
+  [^IPersistentMap this o]
+  (cond
+   (instance? java.util.Map$Entry o)
+     (let [^java.util.Map$Entry pair o]
+       (.assoc this (.getKey pair) (.getValue pair)))
+   (instance? clojure.lang.IPersistentVector o)
+     (let [^clojure.lang.IPersistentVector vec o]
+       (.assoc this (.nth vec 0) (.nth vec 1)))
+   :else (loop [this this
+                o o]
+      (if (seq o)
+        (let [^java.util.Map$Entry pair (first o)]
+          (recur (.assoc this (.getKey pair) (.getValue pair)) (rest o)))
+        this))))
+
 (defn- emit-defrecord 
   "Do not use this directly - use defrecord"
+  {:added "1.2"}
   [tagname name fields interfaces methods]
   (let [tag (keyword (str *ns*) (str tagname))
-        classname (symbol (str *ns* "." name))
+        classname (with-meta (symbol (str *ns* "." name)) (meta name))
         interfaces (vec interfaces)
         interface-set (set (map resolve interfaces))
         methodname-set (set (map first methods))
@@ -154,7 +178,7 @@
                                    `(reify clojure.lang.ILookupThunk 
                                            (get [~'thunk ~'gtarget] 
                                                 (if (identical? (class ~'gtarget) ~'gclass) 
-                                                  (. ~hinted-target ~fld)
+                                                  (. ~hinted-target ~(keyword fld))
                                                   ~'thunk)))])
                                 base-fields))
                            nil))))])
@@ -163,7 +187,7 @@
              (conj m 
                    `(count [~'this] (+ ~(count base-fields) (count ~'__extmap)))
                    `(empty [~'this] (throw (UnsupportedOperationException. (str "Can't create empty: " ~(str classname)))))
-                   `(cons [~'this ~'e] (let [[~'k ~'v] ~'e] (.assoc ~'this ~'k ~'v)))
+                   `(cons [~'this ~'e] ((var imap-cons) ~'this ~'e))
                    `(equiv [~'this ~'o] (.equals ~'this ~'o))
                    `(containsKey [~'this ~'k] (not (identical? ~'this (.valAt ~'this ~'k ~'this))))
                    `(entryAt [~'this ~'k] (let [~'v (.valAt ~'this ~'k ~'this)]
@@ -180,8 +204,23 @@
                    `(without [~'this ~'k] (if (contains? #{~@(map keyword base-fields)} ~'k)
                                             (dissoc (with-meta (into {} ~'this) ~'__meta) ~'k)
                                             (new ~tagname ~@(remove #{'__extmap} fields) 
-                                                 (not-empty (dissoc ~'__extmap ~'k))))))])]
-     (let [[i m] (-> [interfaces methods] eqhash iobj ilookup imap)]
+                                                 (not-empty (dissoc ~'__extmap ~'k))))))])
+      (ijavamap [[i m]]
+                [(conj i 'java.util.Map 'java.io.Serializable)
+                 (conj m
+                       `(size [~'this] (.count ~'this))
+                       `(isEmpty [~'this] (= 0 (.count ~'this)))
+                       `(containsValue [~'this ~'v] (-> ~'this vals (.contains ~'v)))
+                       `(get [~'this ~'k] (.valAt ~'this ~'k))
+                       `(put [~'this ~'k ~'v] (throw (UnsupportedOperationException.)))
+                       `(remove [~'this ~'k] (throw (UnsupportedOperationException.)))
+                       `(putAll [~'this ~'m] (throw (UnsupportedOperationException.)))
+                       `(clear [~'this] (throw (UnsupportedOperationException.)))
+                       `(keySet [~'this] (set (keys ~'this)))
+                       `(values [~'this] (vals ~'this))
+                       `(entrySet [~'this] (set ~'this)))])
+      ]
+     (let [[i m] (-> [interfaces methods] eqhash iobj ilookup imap ijavamap)]
        `(deftype* ~tagname ~classname ~(conj hinted-fields '__meta '__extmap) 
           :implements ~(vec i) 
           ~@m)))))
@@ -246,6 +285,7 @@
   followed by a metadata map (nil for none) and an extension field
   map (nil for none), and one taking only the fields (using nil for
   meta and extension fields)."
+  {:added "1.2"}
 
   [name [& fields] & opts+specs]
   (let [gname name
@@ -258,13 +298,12 @@
        ~(emit-defrecord name gname (vec hinted-fields) (vec interfaces) methods)
        (defmethod print-method ~classname [o# w#]
            ((var print-defrecord) o# w#))
-       (ns-unmap (find-ns '~(ns-name *ns*)) '~name)
        (import ~classname)
        #_(defn ~name
          ([~@fields] (new ~classname ~@fields nil nil))
          ([~@fields meta# extmap#] (new ~classname ~@fields meta# extmap#))))))
 
-(defn- print-defrecord [o #^Writer w]
+(defn- print-defrecord [o ^Writer w]
   (print-meta o w)
   (.write w "#:")
   (.write w (.getName (class o)))
@@ -275,7 +314,7 @@
 (defn- emit-deftype* 
   "Do not use this directly - use deftype"
   [tagname name fields interfaces methods]
-  (let [classname (symbol (str *ns* "." name))]
+  (let [classname (with-meta (symbol (str *ns* "." name)) (meta name))]
     `(deftype* ~tagname ~classname ~fields 
        :implements ~interfaces 
        ~@methods)))
@@ -338,6 +377,7 @@
   writes the .class file to the *compile-path* directory.
 
   One constructors will be defined, taking the designated fields."
+  {:added "1.2"}
 
   [name [& fields] & opts+specs]
   (let [gname name
@@ -348,7 +388,6 @@
         fields (vec (map #(with-meta % nil) fields))]
     `(do
        ~(emit-deftype* name gname (vec hinted-fields) (vec interfaces) methods)
-       (ns-unmap (find-ns '~(ns-name *ns*)) '~name)
        (import ~classname))))
 
 
@@ -356,27 +395,27 @@
 
 ;;;;;;;;;;;;;;;;;;;;;;; protocols ;;;;;;;;;;;;;;;;;;;;;;;;
 
-(defn- expand-method-impl-cache [#^clojure.lang.MethodImplCache cache c f]
-  (let [cs (into {} (remove (fn [[c f]] (nil? f)) (map vec (partition 2 (.table cache)))))
-        cs (assoc cs c f)
+(defn- expand-method-impl-cache [^clojure.lang.MethodImplCache cache c f]
+  (let [cs (into {} (remove (fn [[c e]] (nil? e)) (map vec (partition 2 (.table cache)))))
+        cs (assoc cs c (clojure.lang.MethodImplCache$Entry. c f))
         [shift mask] (min-hash (keys cs))
         table (make-array Object (* 2 (inc mask)))
-        table (reduce (fn [#^objects t [c f]]
+        table (reduce (fn [^objects t [c e]]
                         (let [i (* 2 (int (shift-mask shift mask (hash c))))]
                           (aset t i c)
-                          (aset t (inc i) f)
+                          (aset t (inc i) e)
                           t))
                       table cs)]
     (clojure.lang.MethodImplCache. (.protocol cache) (.methodk cache) shift mask table)))
 
-(defn- super-chain [#^Class c]
+(defn- super-chain [^Class c]
   (when c
     (cons c (super-chain (.getSuperclass c)))))
 
 (defn- pref
   ([] nil)
   ([a] a) 
-  ([#^Class a #^Class b]
+  ([^Class a ^Class b]
      (if (.isAssignableFrom a b) b a)))
 
 (defn find-protocol-impl [protocol x]
@@ -393,28 +432,37 @@
 (defn find-protocol-method [protocol methodk x]
   (get (find-protocol-impl protocol x) methodk))
 
+(defn- protocol?
+  [maybe-p]
+  (boolean (:on-interface maybe-p)))
+
 (defn- implements? [protocol atype]
-  (and atype (.isAssignableFrom #^Class (:on-interface protocol) atype)))
+  (and atype (.isAssignableFrom ^Class (:on-interface protocol) atype)))
 
 (defn extends? 
   "Returns true if atype extends protocol"
+  {:added "1.2"}
   [protocol atype]
   (boolean (or (implements? protocol atype) 
                (get (:impls protocol) atype))))
 
 (defn extenders 
   "Returns a collection of the types explicitly extending protocol"
+  {:added "1.2"}
   [protocol]
   (keys (:impls protocol)))
 
 (defn satisfies? 
   "Returns true if x satisfies the protocol"
+  {:added "1.2"}
   [protocol x]
   (boolean (find-protocol-impl protocol x)))
 
-(defn -cache-protocol-fn [#^clojure.lang.AFunction pf x]
+(defn -cache-protocol-fn [^clojure.lang.AFunction pf x ^Class c ^clojure.lang.IFn interf]
   (let [cache  (.__methodImplCache pf)
-        f (find-protocol-method (.protocol cache) (.methodk cache) x)]
+        f (if (.isInstance c x)
+            interf 
+            (find-protocol-method (.protocol cache) (.methodk cache) x))]
     (when-not f
       (throw (IllegalArgumentException. (str "No implementation of method: " (.methodk cache) 
                                              " of protocol: " (:var (.protocol cache)) 
@@ -424,32 +472,36 @@
 
 (defn- emit-method-builder [on-interface method on-method arglists]
   (let [methodk (keyword method)
-        gthis (with-meta (gensym) {:tag 'clojure.lang.AFunction})]
+        gthis (with-meta (gensym) {:tag 'clojure.lang.AFunction})
+        ginterf (gensym)]
     `(fn [cache#]
-       (let [#^clojure.lang.AFunction f#
+       (let [~ginterf
+             (fn
+               ~@(map 
+                  (fn [args]
+                    (let [gargs (map #(gensym (str "gf__" % "__")) args)
+                          target (first gargs)]
+                      `([~@gargs]
+                          (. ~(with-meta target {:tag on-interface})  ~(or on-method method) ~@(rest gargs)))))
+                  arglists))
+             ^clojure.lang.AFunction f#
              (fn ~gthis
                ~@(map 
                   (fn [args]
-                    (let [gargs (map #(gensym (str "g__" % "__")) args)
+                    (let [gargs (map #(gensym (str "gf__" % "__")) args)
                           target (first gargs)]
                       `([~@gargs]
-                          (~@(if on-interface
-                               `(if (instance? ~on-interface ~target)
-                                  (. ~(with-meta target {:tag on-interface})  ~(or on-method method) ~@(rest gargs)))
-                               `(do))
-                          (let [cache# (.__methodImplCache ~gthis)]
-                            (if (clojure.lang.Util/identical (clojure.lang.Util/classOf ~target)
-                                                             (.lastClass cache#))
-                              ((.lastImpl cache#) ~@gargs)
-                              (let [f# (or (.fnFor cache# (clojure.lang.Util/classOf ~target))
-                                           (-cache-protocol-fn ~gthis ~target))]
-                                 (f# ~@gargs))))))))
+                          (let [cache# (.__methodImplCache ~gthis)
+                                f# (.fnFor cache# (clojure.lang.Util/classOf ~target))]
+                            (if f# 
+                              (f# ~@gargs)
+                              ((-cache-protocol-fn ~gthis ~target ~on-interface ~ginterf) ~@gargs))))))
                   arglists))]
          (set! (.__methodImplCache f#) cache#)
          f#))))
 
 (defn -reset-methods [protocol]
-  (doseq [[#^clojure.lang.Var v build] (:method-builders protocol)]
+  (doseq [[^clojure.lang.Var v build] (:method-builders protocol)]
     (let [cache (clojure.lang.MethodImplCache. protocol (keyword (.sym v)))]
       (.bindRoot v (build cache)))))
 
@@ -565,7 +617,7 @@
         (foo [] 17)
         (bar-me [] x)
         (bar-me [y] x))))"
-
+  {:added "1.2"} 
   [name & opts+sigs]
   (emit-protocol name opts+sigs))
 
@@ -604,9 +656,12 @@
 
   See also:
   extends?, satisfies?, extenders"
-
+  {:added "1.2"} 
   [atype & proto+mmaps]
   (doseq [[proto mmap] (partition 2 proto+mmaps)]
+    (when-not (protocol? proto)
+      (throw (IllegalArgumentException.
+              (str proto " is not a protocol"))))
     (when (implements? proto atype)
       (throw (IllegalArgumentException. 
               (str atype " already directly implements " (:on-interface proto) " for protocol:"  
@@ -655,7 +710,7 @@
    Foo
      {:baz (fn ([x] ...) ([x y & zs] ...))
       :bar (fn [x y] ...)})"
-
+  {:added "1.2"} 
   [t & specs]
   (emit-extend-type t specs))
 
@@ -701,6 +756,7 @@
    (clojure.core/extend-type nil Protocol 
      (foo [x] ...) 
      (bar [x y] ...)))"
+  {:added "1.2"}
 
   [p & specs]
   (emit-extend-protocol p specs))

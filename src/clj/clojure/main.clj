@@ -8,7 +8,7 @@
 
 ;; Originally contributed by Stephen C. Gilardi
 
-(ns #^{:doc "Top-level main function for Clojure REPL and scripts."
+(ns ^{:doc "Top-level main function for Clojure REPL and scripts."
        :author "Stephen C. Gilardi and Rich Hickey"}
   clojure.main
   (:refer-clojure :exclude [with-bindings])
@@ -96,7 +96,7 @@
 (defn- root-cause
   "Returns the initial cause of an exception or error by peeling off all of
   its wrappers"
-  [#^Throwable throwable]
+  [^Throwable throwable]
   (loop [cause throwable]
     (if-let [cause (.getCause cause)]
       (recur cause)
@@ -164,7 +164,7 @@
   (let [{:keys [init need-prompt prompt flush read eval print caught]
          :or {init        #()
               need-prompt (if (instance? LineNumberingPushbackReader *in*)
-                            #(.atLineStart #^LineNumberingPushbackReader *in*)
+                            #(.atLineStart ^LineNumberingPushbackReader *in*)
                             #(identity true))
               prompt      repl-prompt
               flush       flush
@@ -194,6 +194,7 @@
       (catch Throwable e
         (caught e)
         (set! *e e)))
+     (use 'clojure.repl)
      (prompt)
      (flush)
      (loop []
@@ -206,7 +207,7 @@
 (defn load-script
   "Loads Clojure source from a file or resource given its path. Paths
   beginning with @ or @/ are considered relative to classpath."
-  [#^String path]
+  [^String path]
   (if (.startsWith path "@")
     (RT/loadResourceScript
      (.substring path (if (.startsWith path "@/") 2 1)))
@@ -220,14 +221,14 @@
 (defn- eval-opt
   "Evals expressions in str, prints each non-nil result using prn"
   [str]
-  (let [eof (Object.)]
-    (with-in-str str
-      (loop [input (read *in* false eof)]
+  (let [eof (Object.)
+        reader (LineNumberingPushbackReader. (java.io.StringReader. str))]
+      (loop [input (read reader false eof)]
         (when-not (= input eof)
           (let [value (eval input)]
             (when-not (nil? value)
               (prn value))
-            (recur (read *in* false eof))))))))
+            (recur (read reader false eof)))))))
 
 (defn- init-dispatch
   "Returns the handler associated with an init opt"

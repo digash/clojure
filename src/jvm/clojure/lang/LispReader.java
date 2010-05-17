@@ -68,7 +68,7 @@ static Var ARG_ENV = Var.create(null);
 	macros[';'] = new CommentReader();
 	macros['\''] = new WrappingReader(QUOTE);
 	macros['@'] = new WrappingReader(DEREF);//new DerefReader();
-	macros['^'] = new DeprecatedWrappingReader(META, "^");
+	macros['^'] = new MetaReader();
 	macros['`'] = new SyntaxQuoteReader();
 	macros['~'] = new UnquoteReader();
 	macros['('] = new ListReader();
@@ -307,7 +307,10 @@ private static Object matchSymbol(String s){
 			else
 				kns = Compiler.currentNS();
 			//auto-resolving keyword
-			return Keyword.intern(kns.name.name,ks.name);
+            if (kns != null)
+			    return Keyword.intern(kns.name.name,ks.name);
+            else
+                return null;    
 			}
 		boolean isKeyword = s.charAt(0) == ':';
 		Symbol sym = Symbol.intern(s.substring(isKeyword ? 1 : 0));

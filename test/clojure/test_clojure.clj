@@ -49,6 +49,14 @@
       :clojure-xml
       :clojure-zip
       :protocols
+      :genclass
+      :main
+      :vectors
+      :annotations
+      :pprint
+      :serialization
+      :rt
+      :repl
       ])
 
 (def test-namespaces

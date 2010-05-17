@@ -237,12 +237,30 @@ public static List<String> processCommandLine(String[] args){
 	return arglist;
 }
 
+// duck typing stderr plays nice with e.g. swank 
+public static PrintWriter errPrintWriter(){
+    Writer w = (Writer) ERR.deref();
+    if (w instanceof PrintWriter) {
+        return (PrintWriter) w;
+    } else {
+        return new PrintWriter(w);
+    }
+}
+
 static public final Object[] EMPTY_ARRAY = new Object[]{};
-static public final Comparator DEFAULT_COMPARATOR = new Comparator(){
-	public int compare(Object o1, Object o2){
+static public final Comparator DEFAULT_COMPARATOR = new DefaultComparator();
+
+private static final class DefaultComparator implements Comparator, Serializable {
+    public int compare(Object o1, Object o2){
 		return Util.compare(o1, o2);
 	}
-};
+
+    private Object readResolve() throws ObjectStreamException {
+        // ensures that we aren't hanging onto a new default comparator for every
+        // sorted set, etc., we deserialize
+        return DEFAULT_COMPARATOR;
+    }
+}
 
 static AtomicInteger id = new AtomicInteger(1);
 
@@ -329,7 +347,7 @@ public static void loadResourceScript(Class c, String name, boolean failIfNotFou
 }
 
 static public void init() throws Exception{
-	((PrintWriter) RT.ERR.deref()).println("No need to call RT.init() anymore");
+	RT.errPrintWriter().println("No need to call RT.init() anymore");
 }
 
 static public long lastModified(URL url, String libfile) throws Exception{
